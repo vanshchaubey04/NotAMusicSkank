@@ -110,6 +110,12 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
     music_engine = MusicEngine(bpm=drum_engine.bpm)
     gui = OverlayGUI(music_engine=music_engine)
 
+    # Wire drum hit callback to interactive tutorial action verification
+    drum_engine.on_hit_callback = lambda hit: (
+        gui.notify_action_event(f"hit_{hit.finger}"),
+        gui.notify_action_event("hit_any")
+    )
+
     window_name = "AirBeat - Camera Test"
     window_supported = True
 
@@ -117,7 +123,7 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
         frame_count = 0
         print("\n[AirBeat] Starting video feed.")
         print("  Controls: [P] Play/Pause Backing | [K] Key | [S] Scale | [T] Style | [M] Drum Map")
-        print("            [B] BPM Mode | [G] Quantize | [C] Metronome Click | [Q/ESC] Quit\n")
+        print("            [B] BPM Mode | [G] Quantize | [C] Metronome Click | [D] Tutorial/Demo | [Q/ESC] Quit\n")
 
         while True:
             ret, frame = cap.read()
@@ -167,7 +173,7 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
             track_tag = f"Track: {music_engine.style[:8]} ({'ON' if music_engine.is_playing else 'OFF'}) ['p']"
             status_text = (
                 f"FPS: {fps_val:.1f} | {track_tag} | Key: {music_engine.key} ['k'] | "
-                f"Scale: {music_engine.scale} ['s'] | Quant: {drum_engine.quantize_mode.upper()} ['g']"
+                f"Scale: {music_engine.scale} ['s'] | [D] Demo: {'ON' if gui.is_demo_active else 'OFF'}"
             )
             frame = gui.draw_hud(
                 frame,
@@ -181,22 +187,41 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
                     cv2.imshow(window_name, frame)
                     key = cv2.waitKey(1) & 0xFF
                     if key in (27, ord("q")):  # ESC or 'q'
-                        print("[AirBeat] Quit signal received.")
-                        break
+                        if key == 27 and gui.is_demo_active:
+                            gui.exit_demo()
+                        else:
+                            print("[AirBeat] Quit signal received.")
+                            break
+                    elif key in (ord("d"), ord("D")):
+                        gui.toggle_demo()
+                    elif gui.is_demo_active and key in (ord("n"), ord("N")):
+                        gui.next_demo_step()
+                    elif gui.is_demo_active and key in (ord("x"), ord("X")):
+                        gui.exit_demo()
+                    elif gui.is_demo_active and key in (9, ord("j"), ord("J")):  # Tab or 'j'
+                        gui.skip_demo_step()
+                    elif gui.is_demo_active and key in (ord("["), 8):  # '[' or Backspace
+                        gui.prev_demo_step()
                     elif key in (ord("p"), ord("P"), 32):  # 'p' or space
                         music_engine.toggle_playback()
+                        gui.notify_action_event("toggle_track")
                     elif key in (ord("k"), ord("K")):
                         music_engine.cycle_key()
+                        gui.notify_action_event("cycle_key")
                     elif key in (ord("s"), ord("S")):
                         music_engine.cycle_scale()
+                        gui.notify_action_event("cycle_scale")
                     elif key in (ord("t"), ord("T")):
                         music_engine.cycle_style()
+                        gui.notify_action_event("cycle_style")
                     elif key in (ord("m"), ord("M")):
                         drum_engine.toggle_mapping_mode()
                     elif key in (ord("b"), ord("B")):
                         drum_engine.toggle_bpm_mode()
+                        gui.notify_action_event("tempo")
                     elif key in (ord("g"), ord("G")):
                         drum_engine.toggle_quantize_mode()
+                        gui.notify_action_event("tempo")
                     elif key in (ord("c"), ord("C")):
                         drum_engine.toggle_metronome_click()
                 except cv2.error as cv_err:

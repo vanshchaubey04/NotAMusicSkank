@@ -17,7 +17,7 @@ Detects air drumming hits from the right hand's index and middle fingertips:
 from collections import deque
 from dataclasses import dataclass
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -45,6 +45,7 @@ from config import (
     DRUM_MAPPING_MODE,
     DRUM_MAX_ARMED_DURATION_MS,
     DRUM_SOUNDS,
+    DRUM_THUMB_VELOCITY_THRESHOLD,
     DRUM_VELOCITY_SMOOTHING,
     DRUM_VELOCITY_THRESHOLD,
     DRUM_ZONE_BOUNDARIES,
@@ -55,8 +56,12 @@ from config import (
 from metronome import MetronomeClock
 
 
+# Right hand 5-finger landmark indices
+THUMB_TIP_IDX = 4
 INDEX_TIP_IDX = 8
 MIDDLE_TIP_IDX = 12
+RING_TIP_IDX = 16
+PINKY_TIP_IDX = 20
 
 
 @dataclass
@@ -95,6 +100,7 @@ class FingerStrikeTracker:
         self.max_armed_ms = max_armed_ms
 
         # Motion state
+        self.prev_x: Optional[float] = None
         self.prev_y: Optional[float] = None
         self.prev_time: Optional[float] = None
         self.raw_velocity: float = 0.0
@@ -113,6 +119,7 @@ class FingerStrikeTracker:
 
     def reset(self) -> None:
         """Reset motion state when hand tracking is lost."""
+        self.prev_x = None
         self.prev_y = None
         self.prev_time = None
         self.raw_velocity = 0.0
@@ -142,6 +149,7 @@ class FingerStrikeTracker:
         self.current_norm_x = norm_x
 
         if self.prev_y is None or self.prev_time is None:
+            self.prev_x = norm_x
             self.prev_y = norm_y
             self.prev_time = timestamp
             return None
@@ -152,7 +160,16 @@ class FingerStrikeTracker:
 
         # Downward motion in image space means norm_y is increasing (dy > 0)
         dy = norm_y - self.prev_y
-        raw_v = dy / dt
+        dx = norm_x - self.prev_x if self.prev_x is not None else 0.0
+
+        # For thumb, also factor in lateral/inward motion since thumb pivots at an angle
+        if self.name == "thumb":
+            if dy > 0:
+                raw_v = (dy + 0.35 * abs(dx)) / dt
+            else:
+                raw_v = dy / dt
+        else:
+            raw_v = dy / dt
 
         # Exponential moving average smoothing
         smoothed_v = (
@@ -160,6 +177,7 @@ class FingerStrikeTracker:
         )
         self.raw_velocity = raw_v
         self.velocity = smoothed_v
+        self.prev_x = norm_x
         self.prev_y = norm_y
         self.prev_time = timestamp
 
@@ -270,7 +288,15 @@ class DrumEngine:
         else:
             self.clock = clock
 
-        # Per-finger trackers
+        # Per-finger trackers (All 5 fingers of the right hand / green hand)
+        self.thumb_tracker = FingerStrikeTracker(
+            name="thumb",
+            landmark_idx=THUMB_TIP_IDX,
+            velocity_threshold=DRUM_THUMB_VELOCITY_THRESHOLD,
+            cooldown_ms=self.cooldown_ms,
+            smoothing=self.velocity_smoothing,
+            decel_ratio=self.decel_ratio,
+        )
         self.index_tracker = FingerStrikeTracker(
             name="index",
             landmark_idx=INDEX_TIP_IDX,
@@ -287,6 +313,32 @@ class DrumEngine:
             smoothing=self.velocity_smoothing,
             decel_ratio=self.decel_ratio,
         )
+        self.ring_tracker = FingerStrikeTracker(
+            name="ring",
+            landmark_idx=RING_TIP_IDX,
+            velocity_threshold=self.velocity_threshold,
+            cooldown_ms=self.cooldown_ms,
+            smoothing=self.velocity_smoothing,
+            decel_ratio=self.decel_ratio,
+        )
+        self.pinky_tracker = FingerStrikeTracker(
+            name="pinky",
+            landmark_idx=PINKY_TIP_IDX,
+            velocity_threshold=self.velocity_threshold,
+            cooldown_ms=self.cooldown_ms,
+            smoothing=self.velocity_smoothing,
+            decel_ratio=self.decel_ratio,
+        )
+        self.finger_trackers = [
+            self.thumb_tracker,
+            self.index_tracker,
+            self.middle_tracker,
+            self.ring_tracker,
+            self.pinky_tracker,
+        ]
+
+        # Optional listener hook for live demo/tutorial feedback
+        self.on_hit_callback: Optional[Callable[[HitEvent], None]] = None
 
         # Active flash events for visual screen flash
         self._active_flashes: List[Dict[str, Any]] = []
@@ -363,8 +415,8 @@ class DrumEngine:
             timestamp = time.time()
 
         if right_hand_data is None:
-            self.index_tracker.reset()
-            self.middle_tracker.reset()
+            for tr in self.finger_trackers:
+                tr.reset()
             return []
 
         # BPM Control Mode (b): Hand height mapped to 60-180 BPM with smoothing
@@ -375,37 +427,24 @@ class DrumEngine:
         landmarks = right_hand_data.landmarks
         pixel_landmarks = right_hand_data.pixel_landmarks
 
-        index_norm_x = float(landmarks[INDEX_TIP_IDX, 0])
-        index_norm_y = float(landmarks[INDEX_TIP_IDX, 1])
-        index_px = (
-            int(pixel_landmarks[INDEX_TIP_IDX, 0]),
-            int(pixel_landmarks[INDEX_TIP_IDX, 1]),
-        )
-
-        middle_norm_x = float(landmarks[MIDDLE_TIP_IDX, 0])
-        middle_norm_y = float(landmarks[MIDDLE_TIP_IDX, 1])
-        middle_px = (
-            int(pixel_landmarks[MIDDLE_TIP_IDX, 0]),
-            int(pixel_landmarks[MIDDLE_TIP_IDX, 1]),
-        )
-
         hits: List[HitEvent] = []
 
-        # Update index finger tracker
-        index_hit = self.index_tracker.update(
-            index_norm_x, index_norm_y, index_px, timestamp
-        )
-        if index_hit is not None:
-            self._handle_hit_trigger(index_hit)
-            hits.append(index_hit)
+        # Update all 5 finger strike trackers (Thumb, Index, Middle, Ring, Pinky)
+        for tr in self.finger_trackers:
+            idx = tr.landmark_idx
+            norm_x = float(landmarks[idx, 0])
+            norm_y = float(landmarks[idx, 1])
+            px = (int(pixel_landmarks[idx, 0]), int(pixel_landmarks[idx, 1]))
 
-        # Update middle finger tracker
-        middle_hit = self.middle_tracker.update(
-            middle_norm_x, middle_norm_y, middle_px, timestamp
-        )
-        if middle_hit is not None:
-            self._handle_hit_trigger(middle_hit)
-            hits.append(middle_hit)
+            hit = tr.update(norm_x, norm_y, px, timestamp)
+            if hit is not None:
+                self._handle_hit_trigger(hit)
+                hits.append(hit)
+                if self.on_hit_callback:
+                    try:
+                        self.on_hit_callback(hit)
+                    except Exception as cb_err:
+                        print(f"⚠️ [DrumEngine] Hit callback error: {cb_err}")
 
         return hits
 
@@ -712,8 +751,8 @@ class DrumEngine:
         return frame
 
     def _render_fingertip_indicators(self, frame: np.ndarray) -> None:
-        """Render floating velocity badges next to the index and middle fingertips."""
-        trackers = [self.index_tracker, self.middle_tracker]
+        """Render floating velocity badges next to all 5 fingertips of the right hand."""
+        trackers = self.finger_trackers
 
         for tr in trackers:
             px, py = tr.current_pixel_pos
@@ -725,52 +764,52 @@ class DrumEngine:
             target_drum = self.audio.resolve_drum(
                 tr.name, tr.current_norm_x, self.mapping_mode
             )
-            label = f"{tr.name[:3]}->{target_drum[:4].upper()}: {sign}{v:.2f}"
+            label = f"{tr.name[:3].upper()}->{target_drum[:4].upper()}: {sign}{v:.2f}"
 
             if tr.state == "ARMED":
                 badge_bg = (0, 165, 255)
                 badge_fg = (255, 255, 255)
             elif tr.state == "COOLDOWN":
-                badge_bg = (100, 100, 100)
+                badge_bg = (80, 80, 95)
                 badge_fg = (200, 200, 200)
-            elif v >= self.velocity_threshold:
+            elif v >= tr.velocity_threshold:
                 badge_bg = (40, 200, 100)
                 badge_fg = (0, 0, 0)
             else:
-                badge_bg = (40, 40, 48)
+                badge_bg = (35, 35, 45)
                 badge_fg = (220, 220, 220)
 
-            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-            box_x = px + 12
-            box_y = py - 8
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+            box_x = px + 10
+            box_y = py - 6
             cv2.rectangle(
                 frame,
                 (box_x, box_y - th - 4),
-                (box_x + tw + 8, box_y + 4),
+                (box_x + tw + 6, box_y + 4),
                 badge_bg,
                 -1,
             )
             cv2.rectangle(
                 frame,
                 (box_x, box_y - th - 4),
-                (box_x + tw + 8, box_y + 4),
+                (box_x + tw + 6, box_y + 4),
                 (180, 180, 180),
                 1,
             )
             cv2.putText(
                 frame,
                 label,
-                (box_x + 4, box_y),
+                (box_x + 3, box_y),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
+                0.42,
                 badge_fg,
                 1,
                 cv2.LINE_AA,
             )
 
-            # Downward motion vector arrow
-            if v > 0.3:
-                arrow_len = min(60, int(v * 20))
+            # Downward motion vector arrow on fast downward flick
+            if v > 0.25:
+                arrow_len = min(50, int(v * 22))
                 cv2.arrowedLine(
                     frame,
                     (px, py),
@@ -787,9 +826,9 @@ class DrumEngine:
         h: int,
         current_time: float,
     ) -> None:
-        """Render master clock metronome, BPM mode, and velocity meter HUD."""
+        """Render master clock metronome, BPM mode, and 5-finger velocity meter HUD."""
         panel_w = 340
-        panel_h = 220
+        panel_h = 265
         panel_x = w - panel_w - 28
         panel_y = 60
 
@@ -823,7 +862,7 @@ class DrumEngine:
         cv2.putText(
             frame,
             "MASTER CLOCK",
-            (panel_x + 12, panel_y + 22),
+            (panel_x + 12, panel_y + 20),
             cv2.FONT_HERSHEY_DUPLEX,
             0.46,
             COLOR_SECONDARY,
@@ -833,7 +872,7 @@ class DrumEngine:
         cv2.putText(
             frame,
             bpm_str,
-            (panel_x + 140, panel_y + 23),
+            (panel_x + 140, panel_y + 21),
             cv2.FONT_HERSHEY_DUPLEX,
             0.55,
             (0, 255, 200),
@@ -847,7 +886,7 @@ class DrumEngine:
         led_start_x = panel_x + 240
         for b in range(4):
             led_x = led_start_x + b * 22
-            led_y = panel_y + 18
+            led_y = panel_y + 17
             if b == beat_idx:
                 led_c = (0, 255, 255) if is_flash else (0, 200, 140)
                 cv2.circle(frame, (led_x, led_y), 6, led_c, -1, cv2.LINE_AA)
@@ -865,9 +904,9 @@ class DrumEngine:
         cv2.putText(
             frame,
             bpm_mode_str,
-            (panel_x + 12, panel_y + 40),
+            (panel_x + 12, panel_y + 38),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.36,
+            0.35,
             (255, 200, 100),
             1,
             cv2.LINE_AA,
@@ -877,9 +916,9 @@ class DrumEngine:
         cv2.putText(
             frame,
             q_info,
-            (panel_x + 12, panel_y + 56),
+            (panel_x + 12, panel_y + 53),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.36,
+            0.35,
             (180, 180, 220),
             1,
             cv2.LINE_AA,
@@ -887,43 +926,43 @@ class DrumEngine:
 
         # Row 3: Mapping Mode
         mode_desc = (
-            "FINGER (Idx=Kick, Mid=Snare)"
+            "5-FINGER KIT (THB=Kik, IDX=Snr, MID=Hat, RNG=Tom, PNK=Csh)"
             if self.mapping_mode == "finger"
             else "ZONES (L=Kick, M=Snare, R=Hat)"
         )
         cv2.putText(
             frame,
             f"Drum Map: {mode_desc} [M]",
-            (panel_x + 12, panel_y + 72),
+            (panel_x + 12, panel_y + 67),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.35,
+            0.33,
             (0, 255, 180),
             1,
             cv2.LINE_AA,
         )
 
-        # Row 4: Finger Meters
-        self._render_finger_meter(
-            frame,
-            tracker=self.index_tracker,
-            display_name="INDEX (tip #8)",
-            x=panel_x + 12,
-            y=panel_y + 88,
-            bar_w=panel_w - 24,
-            current_time=current_time,
-        )
+        # Row 4: All 5 Finger Velocity Meters (Thumb, Index, Middle, Ring, Pinky)
+        finger_displays = [
+            ("THUMB  #4", self.thumb_tracker),
+            ("INDEX  #8", self.index_tracker),
+            ("MIDDLE #12", self.middle_tracker),
+            ("RING   #16", self.ring_tracker),
+            ("PINKY  #20", self.pinky_tracker),
+        ]
 
-        self._render_finger_meter(
-            frame,
-            tracker=self.middle_tracker,
-            display_name="MIDDLE (tip #12)",
-            x=panel_x + 12,
-            y=panel_y + 148,
-            bar_w=panel_w - 24,
-            current_time=current_time,
-        )
+        meter_y_start = panel_y + 80
+        for i, (label_name, tracker) in enumerate(finger_displays):
+            self._render_compact_finger_meter(
+                frame,
+                tracker=tracker,
+                display_name=label_name,
+                x=panel_x + 12,
+                y=meter_y_start + i * 36,
+                bar_w=panel_w - 24,
+                current_time=current_time,
+            )
 
-    def _render_finger_meter(
+    def _render_compact_finger_meter(
         self,
         frame: np.ndarray,
         tracker: FingerStrikeTracker,
@@ -933,9 +972,9 @@ class DrumEngine:
         bar_w: int,
         current_time: float,
     ) -> None:
-        """Render a single finger's live velocity bar, threshold mark, and state badge."""
-        bar_h = 12
-        max_meter_v = max(3.5, self.velocity_threshold * 2.0)
+        """Render a compact live velocity bar, threshold mark, and state badge for a finger."""
+        bar_h = 7
+        max_meter_v = max(2.5, tracker.velocity_threshold * 2.5)
 
         target_drum = self.audio.resolve_drum(
             tracker.name, tracker.current_norm_x, self.mapping_mode
@@ -943,13 +982,13 @@ class DrumEngine:
         dyn_vol = int(self.audio.velocity_to_volume(tracker.velocity) * 100)
 
         sign = "+" if tracker.velocity >= 0 else ""
-        vel_text = f"{display_name} -> {target_drum.upper()}: {sign}{tracker.velocity:.2f} ({dyn_vol}%)"
+        vel_text = f"{display_name}->{target_drum.upper()}: {sign}{tracker.velocity:.2f} ({dyn_vol}%)"
         cv2.putText(
             frame,
             vel_text,
-            (x, y + 12),
+            (x, y + 11),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.40,
+            0.34,
             COLOR_TEXT,
             1,
             cv2.LINE_AA,
@@ -958,44 +997,40 @@ class DrumEngine:
         # State pill badge
         state_label = tracker.state
         if tracker.state == "COOLDOWN":
-            remaining_ms = int(
-                max(
-                    0.0,
-                    tracker.cooldown_ms
-                    - (current_time - tracker.last_hit_time) * 1000.0,
-                )
-            )
-            state_label = f"COOL ({remaining_ms}ms)"
-            badge_color = (110, 110, 110)
+            state_label = "COOL"
+            badge_color = (90, 90, 100)
         elif tracker.state == "ARMED":
+            state_label = "ARMED"
             badge_color = (0, 180, 255)
-        elif tracker.velocity >= self.velocity_threshold:
+        elif tracker.velocity >= tracker.velocity_threshold:
+            state_label = "FAST"
             badge_color = COLOR_SUCCESS
         else:
-            badge_color = (60, 60, 70)
+            state_label = "IDLE"
+            badge_color = (45, 45, 55)
 
-        (sw, _), _ = cv2.getTextSize(state_label, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
-        badge_x = x + bar_w - sw - 10
+        (sw, _), _ = cv2.getTextSize(state_label, cv2.FONT_HERSHEY_SIMPLEX, 0.30, 1)
+        badge_x = x + bar_w - sw - 8
         cv2.rectangle(
             frame,
             (badge_x, y),
-            (badge_x + sw + 8, y + 16),
+            (badge_x + sw + 6, y + 13),
             badge_color,
             -1,
         )
         cv2.putText(
             frame,
             state_label,
-            (badge_x + 4, y + 12),
+            (badge_x + 3, y + 10),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.38,
+            0.30,
             (255, 255, 255),
             1,
             cv2.LINE_AA,
         )
 
         # Bar background
-        bar_y = y + 20
+        bar_y = y + 16
         cv2.rectangle(
             frame,
             (x, bar_y),
@@ -1010,7 +1045,7 @@ class DrumEngine:
         if fill_w > 0:
             if tracker.state == "ARMED":
                 fill_color = COLOR_HIT_FLASH
-            elif tracker.velocity >= self.velocity_threshold:
+            elif tracker.velocity >= tracker.velocity_threshold:
                 fill_color = COLOR_SUCCESS
             else:
                 fill_color = COLOR_PRIMARY
@@ -1023,24 +1058,31 @@ class DrumEngine:
                 -1,
             )
 
-        # Threshold marker line
-        thresh_x = int(x + (self.velocity_threshold / max_meter_v) * bar_w)
+        # Threshold tick indicator
+        thresh_frac = tracker.velocity_threshold / max_meter_v
+        thresh_x = int(x + thresh_frac * bar_w)
         cv2.line(
             frame,
-            (thresh_x, bar_y - 3),
-            (thresh_x, bar_y + bar_h + 3),
-            (0, 0, 255),
-            2,
+            (thresh_x, bar_y - 2),
+            (thresh_x, bar_y + bar_h + 2),
+            (0, 255, 255),
+            1,
             cv2.LINE_AA,
         )
 
-        # Frame border
-        cv2.rectangle(
-            frame,
-            (x, bar_y),
-            (x + bar_w, bar_y + bar_h),
-            (80, 80, 95),
-            1,
+    def _render_finger_meter(
+        self,
+        frame: np.ndarray,
+        tracker: FingerStrikeTracker,
+        display_name: str,
+        x: int,
+        y: int,
+        bar_w: int,
+        current_time: float,
+    ) -> None:
+        """Alias for backward compatibility."""
+        self._render_compact_finger_meter(
+            frame, tracker, display_name, x, y, bar_w, current_time
         )
 
     def cleanup(self) -> None:

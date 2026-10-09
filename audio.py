@@ -28,6 +28,7 @@ from config import (
     DRUM_MIN_VOLUME,
     DRUM_VELOCITY_THRESHOLD,
     DRUM_ZONE_BOUNDARIES,
+    FINGER_DRUM_MAP,
     SOUNDS_DIR,
 )
 
@@ -89,7 +90,7 @@ class AudioManager:
 
     def _load_or_synthesize_samples(self) -> None:
         """Load external WAV files if present, or synthesize with NumPy out of the box."""
-        drum_types = ["kick", "snare", "hihat"]
+        drum_types = ["kick", "snare", "hihat", "tom", "crash"]
 
         for drum in drum_types:
             wav_path = os.path.join(SOUNDS_DIR, f"{drum}.wav")
@@ -147,6 +148,33 @@ class AudioManager:
             signal = noise * np.exp(-48.0 * t)
             signal = np.clip(signal * 1.5, -1.0, 1.0)
 
+        elif drum_type == "tom":
+            # Resonant mid-low acoustic tom-tom
+            duration = 0.30
+            t = np.linspace(0, duration, int(sr * duration), endpoint=False)
+            f_start, f_end, decay_f = 145.0, 65.0, 22.0
+            phase = 2 * np.pi * (
+                f_end * t + (f_start - f_end) / decay_f * (1.0 - np.exp(-decay_f * t))
+            )
+            body = np.sin(phase) * np.exp(-10.5 * t)
+            membrane_click = np.sin(2 * np.pi * 380.0 * t) * np.exp(-75.0 * t)
+            signal = np.tanh(1.3 * (0.84 * body + 0.16 * membrane_click))
+
+        elif drum_type == "crash":
+            # Shimmering metallic crash cymbal with inharmonic cluster & high-pass decay
+            duration = 0.60
+            t = np.linspace(0, duration, int(sr * duration), endpoint=False)
+            metal = (
+                0.25 * np.sin(2 * np.pi * 330.0 * t)
+                + 0.25 * np.sin(2 * np.pi * 485.0 * t)
+                + 0.25 * np.sin(2 * np.pi * 675.0 * t)
+                + 0.25 * np.sin(2 * np.pi * 890.0 * t)
+            )
+            noise = np.random.uniform(-1.0, 1.0, len(t))
+            noise = noise - 0.75 * np.roll(noise, 1)
+            signal = (0.35 * metal + 0.65 * noise) * np.exp(-7.0 * t)
+            signal = np.clip(signal * 1.35, -1.0, 1.0)
+
         else:
             duration = 0.1
             t = np.linspace(0, duration, int(sr * duration), endpoint=False)
@@ -178,7 +206,7 @@ class AudioManager:
         """
         v_min = DRUM_VELOCITY_THRESHOLD
         v_max = DRUM_MAX_VELOCITY
-        norm_v = np.clip((velocity - v_min) / (v_max - v_min), 0.0, 1.0)
+        norm_v = np.clip((velocity - v_min) / max(0.001, v_max - v_min), 0.0, 1.0)
 
         # Gentle power curve for natural acoustic dynamics
         curved_v = float(norm_v ** 0.85)
@@ -194,12 +222,12 @@ class AudioManager:
         """Map finger strike or horizontal hand position to target drum sound.
 
         Args:
-            finger_name: "index" or "middle".
+            finger_name: "thumb", "index", "middle", "ring", or "pinky".
             norm_x: Normalized horizontal coordinate of the striking fingertip (0=left, 1=right).
             mapping_mode: "finger" or "zones" (defaults to self.mapping_mode).
 
         Returns:
-            Drum sound name ("kick", "snare", or "hihat").
+            Drum sound name ("kick", "snare", "hihat", "tom", or "crash").
         """
         mode = mapping_mode or self.mapping_mode
 
@@ -212,13 +240,9 @@ class AudioManager:
             else:
                 return "hihat"
 
-        # Default "finger" mode
-        if finger_name.lower() == "index":
-            return "kick"
-        elif finger_name.lower() == "middle":
-            return "snare"
-        else:
-            return "hihat"
+        # 5-finger drum kit mapping (right hand / green hand)
+        name_lower = finger_name.lower()
+        return FINGER_DRUM_MAP.get(name_lower, "kick")
 
     def play_drum(
         self,

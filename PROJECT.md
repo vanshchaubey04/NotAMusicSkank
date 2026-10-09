@@ -8,16 +8,22 @@
 
 AirBeat tracks both hands simultaneously via the webcam and separates performance roles:
 
-### 1. Right Hand: Air Drumming & Rhythm
-* **Two-Finger Hits**: Strike gestures (using index and middle fingers) trigger dynamic drum samples (Kick, Snare, Hi-Hat, Toms, Cymbals).
-* **Hit Detection & Velocity**: Tracks downward acceleration and finger positions relative to virtual spatial hit zones.
-* **BPM & Tempo Control**: Detects rhythmic air-drumming cadence to dynamically calculate and adjust playback BPM (tap tempo).
+### 1. Right Hand: 5-Piece Air Drum Kit & Rhythm
+* **5-Finger Drum Assignment**: Every single finger of the green hand plays a distinct instrument:
+  - **Thumb**: Punchy 808 Kick Drum
+  - **Index**: Acoustic Wire Snare Drum
+  - **Middle**: Closed Metallic Hi-Hat Cymbal
+  - **Ring**: Resonant Acoustic Tom Drum
+  - **Pinky**: Shimmering Metallic Crash Cymbal
+* **High Sensitivity & Velocity Scaling**: Sensitive downward velocity thresholds (0.38 norm/s, 0.32 for thumb) detect subtle finger flicks effortlessly without excessive physical force. Velocity scales volume dynamically.
+* **BPM & Tempo Control**: Detects rhythmic air-drumming cadence to dynamically calculate and adjust playback BPM (tap tempo) or height-mapped tempo (60–180 BPM). Optional 1/8 and 1/16 note quantization.
 
-### 2. Left Hand: Gesture-Driven UI & Accompaniment
+### 2. Left Hand: Gesture-Driven UI, Accompaniment & Guided Tutorial
 * **Floating On-Screen GUI**: A gesture-controlled HUD overlaid directly onto the camera feed.
-* **Key Selection**: Select root musical keys (e.g., C, D, E, F, G, A, B).
-* **Scale / Mode Selection**: Switch musical scales (Major, Minor, Pentatonic, Dorian, Blues, etc.).
-* **Backing Track & Chord Progression**: Choose and launch backing loops, synth chords, or basslines that stay in sync with the right-hand tempo.
+* **Cursor & Touchless Selection**: Left index fingertip acts as cursor; pinch-to-click with hysteresis (enter: 0.052, exit: 0.076) and dwell-to-select fallback (hold 1.0s) with winding progress ring.
+* **Key & Scale Selection**: Cycle root musical keys (C through B) and scales (Major, Minor, Pentatonic, Dorian).
+* **Backing Track & Chord Progression**: Choose and launch backing loops (Lo-Fi Chill, Synthwave 80s, Funk Groove).
+* **Interactive Guided Tutorial / Demo**: Step-by-step walkthrough explaining every feature, live action detection verification, and skip options.
 
 ---
 

@@ -44,11 +44,11 @@ def create_mock_hand_data(
 
 
 def test_gui_initialization():
-    """Verify GUI initialized with default buttons and state."""
+    """Verify GUI initialized with default buttons (including demo) and state."""
     gui = OverlayGUI()
-    assert len(gui.buttons) == 4
+    assert len(gui.buttons) == 5
     button_ids = [b.button_id for b in gui.buttons]
-    assert button_ids == ["playback", "key", "scale", "style"]
+    assert button_ids == ["playback", "key", "scale", "style", "demo"]
     assert gui.selected_key == DEFAULT_KEY
     assert gui.selected_scale == DEFAULT_SCALE
     assert gui.selected_backing_track == DEFAULT_BACKING_STYLE
@@ -236,6 +236,142 @@ def test_draw_hud_renders_without_error():
     assert np.count_nonzero(out_frame) > 0
 
 
+def test_5_finger_drum_kit_and_sensitivity():
+    """Verify 5-finger drum assignment and high sensitivity strike detection."""
+    from config import FINGER_DRUM_MAP, DRUM_VELOCITY_THRESHOLD, DRUM_THUMB_VELOCITY_THRESHOLD
+
+    # 1. Verify 5 distinct drum effects mapped
+    assert FINGER_DRUM_MAP["thumb"] == "kick"
+    assert FINGER_DRUM_MAP["index"] == "snare"
+    assert FINGER_DRUM_MAP["middle"] == "hihat"
+    assert FINGER_DRUM_MAP["ring"] == "tom"
+    assert FINGER_DRUM_MAP["pinky"] == "crash"
+
+    # 2. Verify strike thresholds calibrated for effortless slight movements
+    assert DRUM_VELOCITY_THRESHOLD <= 0.40
+    assert DRUM_THUMB_VELOCITY_THRESHOLD <= 0.35
+
+    audio = AudioManager()
+    audio.initialize()
+
+    # Verify all 5 instruments synthesized and ready in audio manager
+    assert "kick" in audio._sounds
+    assert "snare" in audio._sounds
+    assert "hihat" in audio._sounds
+    assert "tom" in audio._sounds
+    assert "crash" in audio._sounds
+
+    for finger, expected_sound in FINGER_DRUM_MAP.items():
+        resolved = audio.resolve_drum(finger, 0.5)
+        assert resolved == expected_sound, f"Expected {expected_sound} for {finger}, got {resolved}"
+
+    drum_engine = DrumEngine(audio_manager=audio)
+
+    # Check 5 trackers instantiated
+    assert hasattr(drum_engine, "thumb_tracker")
+    assert hasattr(drum_engine, "index_tracker")
+    assert hasattr(drum_engine, "middle_tracker")
+    assert hasattr(drum_engine, "ring_tracker")
+    assert hasattr(drum_engine, "pinky_tracker")
+
+    # Verify on_hit_callback invocation
+    detected_hits = []
+    drum_engine.on_hit_callback = lambda hit: detected_hits.append(hit)
+
+    # Simulate slight downward thumb movement
+    norm_w, norm_h = 1280, 720
+    landmarks_1 = np.zeros((21, 3), dtype=np.float32)
+    pixel_1 = np.zeros((21, 2), dtype=np.float32)
+    landmarks_1[4] = [0.45, 0.40, 0.0]
+    pixel_1[4] = [0.45 * norm_w, 0.40 * norm_h]
+    hand_t1 = HandData("Right", 0.95, landmarks_1, pixel_1, landmarks_1, (500, 250, 100, 100))
+
+    landmarks_2 = np.zeros((21, 3), dtype=np.float32)
+    pixel_2 = np.zeros((21, 2), dtype=np.float32)
+    # Move downward by 0.035 units in 0.05s -> velocity = 0.70 units/s (arms the strike)
+    landmarks_2[4] = [0.45, 0.435, 0.0]
+    pixel_2[4] = [0.45 * norm_w, 0.435 * norm_h]
+    hand_t2 = HandData("Right", 0.95, landmarks_2, pixel_2, landmarks_2, (500, 270, 100, 100))
+
+    # Frame 3: Deceleration / reversal (finger stops moving downward)
+    landmarks_3 = np.zeros((21, 3), dtype=np.float32)
+    pixel_3 = np.zeros((21, 2), dtype=np.float32)
+    landmarks_3[4] = [0.45, 0.435, 0.0]
+    pixel_3[4] = [0.45 * norm_w, 0.435 * norm_h]
+    hand_t3 = HandData("Right", 0.95, landmarks_3, pixel_3, landmarks_3, (500, 270, 100, 100))
+
+    drum_engine.process_right_hand(hand_t1, timestamp=1.0)
+    drum_engine.process_right_hand(hand_t2, timestamp=1.05)
+    hits = drum_engine.process_right_hand(hand_t3, timestamp=1.10)
+
+    assert len(hits) >= 1
+    assert hits[0].finger == "thumb"
+    assert hits[0].velocity >= 0.30
+    assert len(detected_hits) >= 1
+
+    drum_engine.cleanup()
+
+
+def test_demo_tutorial_navigation_and_actions():
+    """Verify guided interactive demo walkthrough: toggle, next, prev, skip, and live action verification."""
+    gui = OverlayGUI()
+    assert not gui.is_demo_active
+    assert len(gui.tutorial_steps) >= 12
+    assert len(gui.tutorial_buttons) == 4
+
+    # 1. Toggle demo ON
+    gui.toggle_demo()
+    assert gui.is_demo_active
+    assert gui.demo_step == 0
+    assert gui.tutorial_steps[0].step_id == "welcome"
+
+    # 2. Advance to Step 1 (Thumb / Kick)
+    gui.next_demo_step()
+    assert gui.demo_step == 1
+    assert gui.tutorial_steps[1].step_id == "thumb"
+    assert not gui.step_action_completed
+
+    # 3. Verify Live Action detection for thumb flick
+    gui.notify_action_event("hit_thumb")
+    assert gui.step_action_completed
+
+    # 4. Advance to Step 2 (Index / Snare)
+    gui.next_demo_step()
+    assert gui.demo_step == 2
+    assert gui.tutorial_steps[2].step_id == "index"
+    assert not gui.step_action_completed
+
+    # 5. Skip Step 2 if user doesn't want to play snare right now
+    gui.skip_demo_step()
+    assert gui.demo_step == 3
+    assert gui.tutorial_steps[3].step_id == "middle"
+
+    # 6. Return to Previous Step
+    gui.prev_demo_step()
+    assert gui.demo_step == 2
+
+    # 7. Exit demo
+    gui.exit_demo()
+    assert not gui.is_demo_active
+
+
+def test_demo_render_overlay():
+    """Verify demo overlay cards and live action verification box render seamlessly."""
+    gui = OverlayGUI()
+    gui.start_demo()
+    assert gui.is_demo_active
+
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    out_frame = gui.draw_hud(frame, camera_ok=True, status_message="Demo Running")
+    assert out_frame is not None
+    assert np.count_nonzero(out_frame) > 0
+
+    # Test completed action rendering
+    gui.notify_action_event(gui.tutorial_steps[gui.demo_step].expected_action)
+    out_frame_done = gui.draw_hud(frame, camera_ok=True)
+    assert out_frame_done is not None
+
+
 if __name__ == "__main__":
     tests = [
         ("test_gui_initialization", test_gui_initialization),
@@ -245,6 +381,9 @@ if __name__ == "__main__":
         ("test_button_actions_cycle_all", test_button_actions_cycle_all),
         ("test_hand_isolation_left_and_right", test_hand_isolation_left_and_right),
         ("test_draw_hud_renders_without_error", test_draw_hud_renders_without_error),
+        ("test_5_finger_drum_kit_and_sensitivity", test_5_finger_drum_kit_and_sensitivity),
+        ("test_demo_tutorial_navigation_and_actions", test_demo_tutorial_navigation_and_actions),
+        ("test_demo_render_overlay", test_demo_render_overlay),
     ]
 
     passed = 0

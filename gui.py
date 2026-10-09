@@ -69,6 +69,19 @@ class GUIButton:
         return self.x <= px <= self.x + self.w and self.y <= py <= self.y + self.h
 
 
+@dataclass
+class TutorialStep:
+    """Represents a guided step in the interactive AirBeat demo."""
+
+    step_id: str
+    category: str
+    title: str
+    explanation: str
+    action_prompt: str
+    tip: str
+    expected_action: str
+
+
 class OverlayGUI:
     """Full-screen interactive OpenCV overlay driven by left-hand gestures."""
 
@@ -98,9 +111,204 @@ class OverlayGUI:
         # Visual click flash queue: (x, y, timestamp, color)
         self._click_flashes: List[Dict[str, Any]] = []
 
+        # Interactive Demo & Guided Tutorial State
+        self.is_demo_active: bool = False
+        self.demo_step: int = 0
+        self.step_action_completed: bool = False
+        self.step_completed_time: float = 0.0
+        self.tutorial_steps: List[TutorialStep] = []
+        self._init_tutorial_steps()
+        self.tutorial_buttons: List[GUIButton] = []
+        self._init_tutorial_buttons(card_x=320, card_y=450, card_w=640, card_h=240)
+
         # Initialize interactive buttons (left side panel)
         self.buttons: List[GUIButton] = []
         self._init_buttons()
+
+    def _init_tutorial_steps(self) -> None:
+        """Initialize the multi-step guided interactive walkthrough."""
+        self.tutorial_steps = [
+            TutorialStep(
+                step_id="welcome",
+                category="GETTING STARTED",
+                title="Welcome to AirBeat Gesture Studio!",
+                explanation="AirBeat turns your webcam into a touchless air drum kit and music workstation.",
+                action_prompt="GREEN hand (Right) = 5-Finger Drums | CYAN hand (Left) = GUI Controls",
+                tip="Place both hands comfortably in view of the webcam. Click [NEXT] or press [N] to begin!",
+                expected_action="welcome",
+            ),
+            TutorialStep(
+                step_id="thumb",
+                category="GREEN HAND: 5-PIECE DRUM KIT",
+                title="1. Right Thumb -> Deep 808 Kick Drum",
+                explanation="Your right thumb triggers the low-end foundation: a punchy, analog 808 Kick drum.",
+                action_prompt="TRY IT LIVE: Flick or tap your right thumb downward!",
+                tip="High sensitivity detects slight movements! If not working, click [SKIP].",
+                expected_action="thumb",
+            ),
+            TutorialStep(
+                step_id="index",
+                category="GREEN HAND: 5-PIECE DRUM KIT",
+                title="2. Right Index Finger -> Acoustic Snare Drum",
+                explanation="Your right index finger plays the crisp Snare drum with acoustic wire rattle.",
+                action_prompt="TRY IT LIVE: Tap your right index finger downward!",
+                tip="Play Thumb (Kick) on beats 1 & 3 and Index (Snare) on beats 2 & 4 for a classic rock beat!",
+                expected_action="index",
+            ),
+            TutorialStep(
+                step_id="middle",
+                category="GREEN HAND: 5-PIECE DRUM KIT",
+                title="3. Right Middle Finger -> Closed Hi-Hat",
+                explanation="Your right middle finger plays a crisp, metallic Hi-Hat cymbal.",
+                action_prompt="TRY IT LIVE: Tap your right middle finger downward!",
+                tip="Play continuous 8th notes with your middle finger for rhythmic groove drive!",
+                expected_action="middle",
+            ),
+            TutorialStep(
+                step_id="ring",
+                category="GREEN HAND: 5-PIECE DRUM KIT",
+                title="4. Right Ring Finger -> Resonant Tom Drum",
+                explanation="Your right ring finger triggers a warm, resonant acoustic Tom drum for fills.",
+                action_prompt="TRY IT LIVE: Tap your right ring finger downward!",
+                tip="Use the Tom drum to create exciting rhythmic fills at the end of every 4 bars.",
+                expected_action="ring",
+            ),
+            TutorialStep(
+                step_id="pinky",
+                category="GREEN HAND: 5-PIECE DRUM KIT",
+                title="5. Right Pinky Finger -> Shimmering Crash",
+                explanation="Your right pinky triggers a shimmering Crash Cymbal with long metallic sustain.",
+                action_prompt="TRY IT LIVE: Tap your right pinky finger downward!",
+                tip="Hit the Crash on beat 1 whenever transitioning into a new musical section!",
+                expected_action="pinky",
+            ),
+            TutorialStep(
+                step_id="velocity",
+                category="FEEL & EXPRESSION",
+                title="6. Dynamic Strike Velocity & Loudness",
+                explanation="AirBeat tracks your flick speed: gentle flicks play soft, fast flicks play loud.",
+                action_prompt="TRY IT LIVE: Tap softly, then tap fast and firmly to hear volume scaling!",
+                tip="Watch the live velocity bars on the right master clock panel to gauge intensity.",
+                expected_action="hit_any",
+            ),
+            TutorialStep(
+                step_id="pinch",
+                category="CYAN HAND: MENU CONTROL",
+                title="7. Left Hand: Cursor & Pinch-to-Click",
+                explanation="Point your left index finger to move the cursor. Bring thumb and index together to click.",
+                action_prompt="TRY IT LIVE: Pinch your left thumb and index fingertips together!",
+                tip="Schmitt trigger hysteresis ensures clean single clicks without double-firing.",
+                expected_action="pinch",
+            ),
+            TutorialStep(
+                step_id="dwell",
+                category="CYAN HAND: MENU CONTROL",
+                title="8. Left Hand: Dwell-to-Select (Hands-Free)",
+                explanation="Prefer not to pinch? Hover your cursor over any button for 1 second to auto-select.",
+                action_prompt="TRY IT LIVE: Hover your left index finger over any button for 1.0s!",
+                tip="Watch the yellow circular progress ring wind up to 100% around your fingertip.",
+                expected_action="dwell",
+            ),
+            TutorialStep(
+                step_id="backing",
+                category="MUSIC & ACCOMPANIMENT",
+                title="9. Procedural Backing Loops & Styles",
+                explanation="AirBeat synthesizes chord progressions, sub-bass, and ambient pads in real time.",
+                action_prompt="TRY IT LIVE: Click 'BACKING TRACK' or press [P] to toggle music!",
+                tip="Choose from 3 distinct styles: Lo-Fi Chill, Synthwave 80s, or Funk Groove.",
+                expected_action="toggle_track",
+            ),
+            TutorialStep(
+                step_id="keys",
+                category="MUSIC & ACCOMPANIMENT",
+                title="10. Key & Scale Transposition",
+                explanation="Pick any Key (C to B) and Scale (Major, Minor, Pentatonic, Dorian).",
+                action_prompt="TRY IT LIVE: Click 'KEY SELECTOR' [K] or 'SCALE SELECTOR' [S]!",
+                tip="The backing chords and bass instantly re-transpose to follow your key choice.",
+                expected_action="cycle_key",
+            ),
+            TutorialStep(
+                step_id="tempo",
+                category="RHYTHM & METRONOME",
+                title="11. Tap Tempo, Hand Height & Quantization",
+                explanation="Tap tempo [B] auto-sets BPM from your drumming. Height mode maps hand elevation.",
+                action_prompt="TRY IT LIVE: Drum a steady beat, or press [G] to turn on Quantization!",
+                tip="Toggle the audible woodblock click anytime with [C].",
+                expected_action="tempo",
+            ),
+            TutorialStep(
+                step_id="finish",
+                category="READY TO PERFORM",
+                title="12. You're Ready to Play AirBeat!",
+                explanation="You've learned all of AirBeat's features! You have a full touchless studio.",
+                action_prompt="Click [FINISH / EXIT] or press [D] / [ESC] to start jamming!",
+                tip="Left hand sets the groove and harmonic vibe; right hand rocks the 5-finger drum kit!",
+                expected_action="finish",
+            ),
+        ]
+
+    def _init_tutorial_buttons(self, card_x: int, card_y: int, card_w: int, card_h: int) -> None:
+        """Initialize clickable navigation buttons on the tutorial card."""
+        btn_y = card_y + card_h - 44
+        self.tutorial_buttons = [
+            GUIButton(
+                button_id="tut_prev",
+                title="PREV",
+                x=card_x + 18,
+                y=btn_y,
+                w=82,
+                h=34,
+                get_value_text=lambda: "◀ PREV",
+                on_click=self.prev_demo_step,
+                accent_color=(140, 140, 160),
+            ),
+            GUIButton(
+                button_id="tut_skip",
+                title="SKIP",
+                x=card_x + 108,
+                y=btn_y,
+                w=82,
+                h=34,
+                get_value_text=lambda: "⏭ SKIP",
+                on_click=self.skip_demo_step,
+                accent_color=(255, 180, 50),
+            ),
+            GUIButton(
+                button_id="tut_next",
+                title="NEXT",
+                x=card_x + 198,
+                y=btn_y,
+                w=128,
+                h=34,
+                get_value_text=lambda: "✓ DONE [NEXT]" if self.step_action_completed else "▶ NEXT",
+                on_click=self.next_demo_step,
+                accent_color=COLOR_SUCCESS if self.step_action_completed else COLOR_PRIMARY,
+            ),
+            GUIButton(
+                button_id="tut_exit",
+                title="EXIT",
+                x=card_x + card_w - 138,
+                y=btn_y,
+                w=120,
+                h=34,
+                get_value_text=lambda: "✕ EXIT DEMO",
+                on_click=self.exit_demo,
+                accent_color=(60, 60, 240),
+            ),
+        ]
+
+    def _update_tutorial_buttons_pos(self, card_x: int, card_y: int, card_w: int, card_h: int) -> None:
+        """Keep tutorial buttons aligned with tutorial card coordinates."""
+        btn_y = card_y + card_h - 44
+        if len(self.tutorial_buttons) == 4:
+            self.tutorial_buttons[0].x = card_x + 18
+            self.tutorial_buttons[0].y = btn_y
+            self.tutorial_buttons[1].x = card_x + 108
+            self.tutorial_buttons[1].y = btn_y
+            self.tutorial_buttons[2].x = card_x + 198
+            self.tutorial_buttons[2].y = btn_y
+            self.tutorial_buttons[3].x = card_x + card_w - 138
+            self.tutorial_buttons[3].y = btn_y
 
     def _init_buttons(self) -> None:
         """Create buttons laid out ergonomically on the left edge of the screen."""
@@ -170,6 +378,21 @@ class OverlayGUI:
             )
         )
 
+        # 5. Interactive Demo / Tutorial Button
+        self.buttons.append(
+            GUIButton(
+                button_id="demo",
+                title="TUTORIAL / DEMO",
+                x=start_x,
+                y=start_y + 4 * (btn_h + gap_y),
+                w=btn_w,
+                h=btn_h,
+                get_value_text=lambda: "▶ START DEMO" if not self.is_demo_active else "⏹ EXIT DEMO",
+                on_click=self.toggle_demo,
+                accent_color=COLOR_SECONDARY if not self.is_demo_active else (255, 100, 100),
+            )
+        )
+
     def set_music_engine(self, engine: Any) -> None:
         """Attach music engine reference."""
         self.music_engine = engine
@@ -179,18 +402,102 @@ class OverlayGUI:
         if self.music_engine:
             self.music_engine.toggle_playback()
             self.is_playing = self.music_engine.is_playing
+            self.notify_action_event("toggle_track")
 
     def _action_cycle_key(self) -> None:
         if self.music_engine:
             self.selected_key = self.music_engine.cycle_key(1)
+            self.notify_action_event("cycle_key")
 
     def _action_cycle_scale(self) -> None:
         if self.music_engine:
             self.selected_scale = self.music_engine.cycle_scale(1)
+            self.notify_action_event("cycle_scale")
 
     def _action_cycle_style(self) -> None:
         if self.music_engine:
             self.selected_backing_track = self.music_engine.cycle_style(1)
+            self.notify_action_event("cycle_style")
+
+    def toggle_demo(self) -> bool:
+        """Toggle interactive tutorial walkthrough mode."""
+        self.is_demo_active = not self.is_demo_active
+        if self.is_demo_active:
+            self.demo_step = 0
+            self.step_action_completed = False
+            self.step_completed_time = 0.0
+            print("[Tutorial] Interactive Guided Demo STARTED! Step 1.")
+        else:
+            print("[Tutorial] Interactive Demo closed.")
+        return self.is_demo_active
+
+    def start_demo(self) -> None:
+        """Explicitly open interactive tutorial."""
+        self.is_demo_active = True
+        self.demo_step = 0
+        self.step_action_completed = False
+        self.step_completed_time = 0.0
+
+    def exit_demo(self) -> None:
+        """Exit interactive tutorial."""
+        self.is_demo_active = False
+        self.step_action_completed = False
+        print("[Tutorial] Exited demo.")
+
+    def next_demo_step(self) -> int:
+        """Advance to next tutorial step, or finish if on final step."""
+        if not self.is_demo_active:
+            return 0
+        if self.demo_step >= len(self.tutorial_steps) - 1:
+            self.exit_demo()
+            return 0
+        self.demo_step += 1
+        self.step_action_completed = False
+        self.step_completed_time = 0.0
+        print(f"[Tutorial] Advanced to Step {self.demo_step + 1}: {self.tutorial_steps[self.demo_step].title}")
+        return self.demo_step
+
+    def prev_demo_step(self) -> int:
+        """Return to previous tutorial step."""
+        if not self.is_demo_active:
+            return 0
+        self.demo_step = max(0, self.demo_step - 1)
+        self.step_action_completed = False
+        self.step_completed_time = 0.0
+        return self.demo_step
+
+    def skip_demo_step(self) -> int:
+        """Skip current action if not working or if user wants to move on."""
+        print(f"[Tutorial] Step {self.demo_step + 1} skipped by user.")
+        return self.next_demo_step()
+
+    def notify_action_event(self, action_name: str) -> None:
+        """Triggered by drum hits, gestures, or button clicks to verify live demo actions."""
+        if not self.is_demo_active or self.step_action_completed:
+            return
+
+        current_step = self.tutorial_steps[self.demo_step]
+        expected = current_step.expected_action
+
+        is_match = False
+        if expected == action_name:
+            is_match = True
+        elif expected in ("thumb", "index", "middle", "ring", "pinky") and action_name == f"hit_{expected}":
+            is_match = True
+        elif expected == "hit_any" and action_name.startswith("hit_"):
+            is_match = True
+        elif expected == "tempo" and (action_name in ("tempo", "toggle_track") or action_name.startswith("hit_")):
+            is_match = True
+        elif expected == "cycle_key" and action_name in ("cycle_key", "cycle_scale"):
+            is_match = True
+
+        if is_match:
+            self.step_action_completed = True
+            self.step_completed_time = time.time()
+            if self.cursor_pos:
+                cx, cy = self.cursor_pos
+                self._register_click_flash(cx, cy, COLOR_SUCCESS, time.time())
+            print(f"[Tutorial] Live action verified: '{action_name}' for Step {self.demo_step + 1}!")
 
     def update_state(
         self,
@@ -207,10 +514,12 @@ class OverlayGUI:
         self.current_bpm = bpm
         self.is_playing = is_playing
 
-        # Dynamically synchronize playback button accent and state
+        # Dynamically synchronize button accents and state
         for btn in self.buttons:
             if btn.button_id == "playback":
                 btn.accent_color = (60, 60, 240) if is_playing else COLOR_SUCCESS
+            elif btn.button_id == "demo":
+                btn.accent_color = (255, 100, 100) if self.is_demo_active else COLOR_SECONDARY
 
     def process_left_hand(
         self,
@@ -243,6 +552,10 @@ class OverlayGUI:
             for b in self.buttons:
                 b.is_hovered = False
                 b.dwell_progress = 0.0
+            if self.is_demo_active:
+                for b in self.tutorial_buttons:
+                    b.is_hovered = False
+                    b.dwell_progress = 0.0
             return
 
         landmarks = left_hand_data.landmarks
@@ -277,6 +590,7 @@ class OverlayGUI:
                 if (timestamp - self.last_click_timestamp) >= CLICK_DEBOUNCE_SECONDS:
                     click_triggered = True
                     self.last_click_timestamp = timestamp
+                    self.notify_action_event("pinch")
         else:
             # Exit pinch state
             if dist >= PINCH_OUT_THRESHOLD:
@@ -288,7 +602,12 @@ class OverlayGUI:
         current_hover: Optional[GUIButton] = None
         cx, cy = idx_px
 
-        for btn in self.buttons:
+        # Combine main buttons and tutorial buttons if demo is active
+        active_buttons = list(self.buttons)
+        if self.is_demo_active:
+            active_buttons.extend(self.tutorial_buttons)
+
+        for btn in active_buttons:
             if btn.contains(cx, cy):
                 current_hover = btn
                 btn.is_hovered = True
@@ -312,6 +631,7 @@ class OverlayGUI:
                             click_triggered = True
                             self.dwell_triggered = True
                             self.last_click_timestamp = timestamp
+                            self.notify_action_event("dwell")
                             # Add a brief 0.4s pause before next dwell starts
                             self.hover_start_time = timestamp + 0.4
             else:
@@ -370,10 +690,14 @@ class OverlayGUI:
         # 2. Render Interactive Left-Hand Buttons
         self._render_buttons(frame, now)
 
-        # 3. Render Click Ripple Animations
+        # 3. Render Interactive Tutorial Modal (if active)
+        if self.is_demo_active:
+            self._render_tutorial_overlay(frame, now)
+
+        # 4. Render Click Ripple Animations
         self._render_click_flashes(frame, now)
 
-        # 4. Render Left-Hand Cursor & Dwell Progress Ring
+        # 5. Render Left-Hand Cursor & Dwell Progress Ring
         if self.cursor_pos is not None:
             self._render_cursor(frame, now)
 
@@ -465,51 +789,51 @@ class OverlayGUI:
             cv2.LINE_AA,
         )
 
-    def _render_buttons(self, frame: np.ndarray, now: float) -> None:
-        """Draw interactive cards on the left edge with hover and click animations."""
+    def _render_single_button(self, frame: np.ndarray, btn: GUIButton, now: float) -> None:
+        """Render a single glassmorphic button with border, accent stripe, and text."""
         h, w = frame.shape[:2]
-        for btn in self.buttons:
-            bx, by, bw, bh = btn.x, btn.y, btn.w, btn.h
-            if by + bh > h or bx + bw > w:
-                continue
+        bx, by, bw, bh = btn.x, btn.y, btn.w, btn.h
+        if by + bh > h or bx + bw > w or bx < 0 or by < 0:
+            return
 
-            # Check click flash state
-            click_elapsed = now - btn.last_click_time
-            is_click_flash = click_elapsed < 0.20
+        click_elapsed = now - btn.last_click_time
+        is_click_flash = click_elapsed < 0.20
 
-            # Sub-frame glassmorphic background
-            sub_frame = frame[by : by + bh, bx : bx + bw]
-            overlay = sub_frame.copy()
-            bg_color = (40, 40, 52) if btn.is_hovered else (22, 22, 28)
-            overlay[:] = bg_color
+        sub_frame = frame[by : by + bh, bx : bx + bw]
+        overlay = sub_frame.copy()
+        bg_color = (40, 40, 52) if btn.is_hovered else (22, 22, 28)
+        overlay[:] = bg_color
 
-            # Click flash overlay
-            if is_click_flash:
-                overlay[:] = COLOR_HIT_FLASH
+        if is_click_flash:
+            overlay[:] = COLOR_HIT_FLASH
 
-            alpha = 0.88 if not btn.is_hovered else 0.94
-            cv2.addWeighted(overlay, alpha, sub_frame, 1.0 - alpha, 0, sub_frame)
+        alpha = 0.88 if not btn.is_hovered else 0.94
+        cv2.addWeighted(overlay, alpha, sub_frame, 1.0 - alpha, 0, sub_frame)
 
-            # Border
-            if btn.is_hovered:
-                border_color = (0, 255, 200)
-                border_thick = 2
-            else:
-                border_color = (65, 65, 80)
-                border_thick = 1
+        # Border
+        if btn.is_hovered:
+            border_color = (0, 255, 200)
+            border_thick = 2
+        else:
+            border_color = (65, 65, 80)
+            border_thick = 1
 
-            cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), border_color, border_thick, cv2.LINE_AA)
+        cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), border_color, border_thick, cv2.LINE_AA)
 
-            # Left accent stripe
-            cv2.rectangle(
-                frame,
-                (bx, by),
-                (bx + 4, by + bh),
-                btn.accent_color if not btn.is_hovered else (0, 255, 220),
-                -1,
-            )
+        # Left accent stripe
+        cv2.rectangle(
+            frame,
+            (bx, by),
+            (bx + 4, by + bh),
+            btn.accent_color if not btn.is_hovered else (0, 255, 220),
+            -1,
+        )
 
-            # Title
+        val_text = btn.get_value_text()
+        val_color = COLOR_TEXT if not btn.is_hovered else (255, 255, 255)
+
+        if bh >= 48:
+            # Full height card: Title on top, Value on bottom
             cv2.putText(
                 frame,
                 btn.title,
@@ -520,10 +844,6 @@ class OverlayGUI:
                 1,
                 cv2.LINE_AA,
             )
-
-            # Value text
-            val_text = btn.get_value_text()
-            val_color = COLOR_TEXT if not btn.is_hovered else (255, 255, 255)
             cv2.putText(
                 frame,
                 val_text,
@@ -534,8 +854,6 @@ class OverlayGUI:
                 1,
                 cv2.LINE_AA,
             )
-
-            # Hover chevron indicator
             if btn.is_hovered:
                 cv2.putText(
                     frame,
@@ -547,6 +865,146 @@ class OverlayGUI:
                     1,
                     cv2.LINE_AA,
                 )
+        else:
+            # Compact pill button (e.g. tutorial navigation)
+            cv2.putText(
+                frame,
+                val_text,
+                (bx + 10, by + int(bh * 0.65)),
+                cv2.FONT_HERSHEY_DUPLEX,
+                0.40,
+                val_color,
+                1,
+                cv2.LINE_AA,
+            )
+
+    def _render_buttons(self, frame: np.ndarray, now: float) -> None:
+        """Draw interactive cards on the left edge with hover and click animations."""
+        for btn in self.buttons:
+            self._render_single_button(frame, btn, now)
+
+    def _render_tutorial_overlay(self, frame: np.ndarray, now: float) -> None:
+        """Render the interactive demo / tutorial card and action verification box."""
+        if not (0 <= self.demo_step < len(self.tutorial_steps)):
+            return
+
+        h, w = frame.shape[:2]
+        card_w = min(680, w - 340)
+        card_h = 240
+        card_x = max(300, (w - card_w) // 2)
+        card_y = max(60, h - card_h - 25)
+
+        self._update_tutorial_buttons_pos(card_x, card_y, card_w, card_h)
+
+        if card_y + card_h > h or card_x + card_w > w:
+            return
+
+        # Semi-transparent dark background
+        sub = frame[card_y : card_y + card_h, card_x : card_x + card_w]
+        overlay = sub.copy()
+        overlay[:] = (18, 18, 26)
+        cv2.addWeighted(overlay, 0.92, sub, 0.08, 0, sub)
+
+        # Card Border
+        border_color = COLOR_SUCCESS if self.step_action_completed else (0, 255, 200)
+        cv2.rectangle(frame, (card_x, card_y), (card_x + card_w, card_y + card_h), border_color, 2, cv2.LINE_AA)
+
+        # Top banner header
+        cv2.rectangle(frame, (card_x, card_y), (card_x + card_w, card_y + 30), (32, 32, 44), -1)
+        step = self.tutorial_steps[self.demo_step]
+
+        header_text = f"DEMO WALKTHROUGH  |  STEP {self.demo_step + 1}/{len(self.tutorial_steps)}  |  {step.category}"
+        cv2.putText(
+            frame,
+            header_text,
+            (card_x + 14, card_y + 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.40,
+            COLOR_SECONDARY,
+            1,
+            cv2.LINE_AA,
+        )
+
+        # Step title
+        cv2.putText(
+            frame,
+            step.title,
+            (card_x + 14, card_y + 56),
+            cv2.FONT_HERSHEY_DUPLEX,
+            0.56,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
+        # Explanation
+        cv2.putText(
+            frame,
+            step.explanation,
+            (card_x + 14, card_y + 82),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.44,
+            COLOR_TEXT,
+            1,
+            cv2.LINE_AA,
+        )
+
+        # Live Action Callout Box
+        box_y = card_y + 98
+        box_h = 42
+        box_w = card_w - 28
+        box_sub = frame[box_y : box_y + box_h, card_x + 14 : card_x + 14 + box_w]
+        box_overlay = box_sub.copy()
+
+        if self.step_action_completed:
+            box_overlay[:] = (20, 55, 25)
+            box_border = COLOR_SUCCESS
+            status_tag = "✓ ACTION DETECTED!"
+            prompt_disp = f"{status_tag} {step.action_prompt} (Click [NEXT] or keep jamming!)"
+            p_color = (180, 255, 180)
+        else:
+            box_overlay[:] = (35, 25, 25)
+            box_border = COLOR_SECONDARY
+            prompt_disp = f"⚡ {step.action_prompt}"
+            p_color = (255, 240, 200)
+
+        cv2.addWeighted(box_overlay, 0.85, box_sub, 0.15, 0, box_sub)
+        cv2.rectangle(
+            frame,
+            (card_x + 14, box_y),
+            (card_x + 14 + box_w, box_y + box_h),
+            box_border,
+            1,
+            cv2.LINE_AA,
+        )
+
+        cv2.putText(
+            frame,
+            prompt_disp,
+            (card_x + 24, box_y + 26),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.41,
+            p_color,
+            1,
+            cv2.LINE_AA,
+        )
+
+        # Pro-tip below action box
+        tip_text = f"💡 TIP: {step.tip}"
+        cv2.putText(
+            frame,
+            tip_text,
+            (card_x + 14, card_y + 162),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.38,
+            COLOR_TEXT_MUTED,
+            1,
+            cv2.LINE_AA,
+        )
+
+        # Tutorial navigation buttons: PREV, SKIP, NEXT, EXIT
+        for btn in self.tutorial_buttons:
+            self._render_single_button(frame, btn, now)
 
     def _render_cursor(self, frame: np.ndarray, now: float) -> None:
         """Render left index fingertip cursor, pinch state, and dwell progress ring."""
