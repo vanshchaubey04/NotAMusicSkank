@@ -43,7 +43,13 @@ BACKING_TRACKS = [
 ]
 DEFAULT_BACKING_TRACK = "None"
 
-# Drum Configuration
+# Drum Hit Detection Configuration
 DRUM_SOUNDS = ["Kick", "Snare", "Hi-Hat", "Crash"]
-DRUM_HIT_DEBOUNCE_SECONDS = 0.15
-DRUM_VELOCITY_THRESHOLD = 0.05  # Normalized downward delta
+
+# Hit detection parameters
+DRUM_VELOCITY_THRESHOLD = 1.2     # Downward y-velocity (norm units/sec) to arm a strike
+DRUM_COOLDOWN_MS = 120            # Per-finger strike cooldown in milliseconds
+DRUM_VELOCITY_SMOOTHING = 0.6     # Velocity EMA smoothing factor (0.0=sluggish, 1.0=raw)
+DRUM_DECEL_RATIO = 0.60           # Deceleration fraction of peak velocity to trigger hit
+DRUM_FLASH_DURATION_MS = 150      # Visual screen flash duration in milliseconds
+DRUM_MAX_ARMED_DURATION_MS = 160  # Maximum time in armed state before forcing strike eval

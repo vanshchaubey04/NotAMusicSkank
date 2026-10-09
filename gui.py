@@ -138,13 +138,4 @@ class OverlayGUI:
 
     def _draw_drum_zones_scaffold(self, frame: np.ndarray, w: int, h: int) -> None:
         """Render scaffold guide for right hand drum hit zones."""
-        cv2.putText(
-            frame,
-            "[Right Hand: Air Drumming]",
-            (w - 280, 90),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            COLOR_SUCCESS,
-            1,
-            cv2.LINE_AA,
-        )
+        pass

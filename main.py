@@ -131,15 +131,26 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
             if MIRROR_CAMERA:
                 frame = cv2.flip(frame, 1)
 
+            now = time.time()
+
             # Process hand landmarks (left and right hands separated, 1€ smoothed)
-            left_hand, right_hand = tracker.process_frame(frame)
+            left_hand, right_hand = tracker.process_frame(frame, timestamp=now)
+
+            # Process drum hit detection on right hand
+            hits = drum_engine.process_right_hand(right_hand, timestamp=now)
 
             # Draw hand landmarks, bones, and labels
             frame = tracker.draw_debug(
                 frame, left_hand, right_hand, show_fps=False, show_hud=False
             )
 
-            # Render HUD overlay with FPS
+            # Draw drum tuning overlay (live velocity meters, fingertip tags, flash)
+            frame = drum_engine.draw_debug_overlay(
+                frame, right_hand, current_time=now
+            )
+
+            # Render HUD overlay with FPS and current BPM
+            gui.current_bpm = drum_engine.bpm
             fps_val = tracker.fps
             status_text = f"FPS: {fps_val:.1f} | Frame: {frame_count} | Press 'q' to quit"
             frame = gui.draw_hud(
