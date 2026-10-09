@@ -34,9 +34,25 @@ class OverlayGUI:
         self.selected_scale: str = DEFAULT_SCALE
         self.selected_backing_track: str = DEFAULT_BACKING_TRACK
         self.current_bpm: int = DEFAULT_BPM
+        self.is_playing: bool = False
 
         # Active menu category on left side: "Key", "Scale", "Track"
         self.active_category: str = "Key"
+
+    def update_state(
+        self,
+        key: str,
+        scale: str,
+        style: str,
+        bpm: int,
+        is_playing: bool = False,
+    ) -> None:
+        """Synchronize musical state from MusicEngine."""
+        self.selected_key = key
+        self.selected_scale = scale
+        self.selected_backing_track = style
+        self.current_bpm = bpm
+        self.is_playing = is_playing
 
     def process_left_hand(self, left_hand_data: Optional[Dict[str, Any]]) -> None:
         """Process left hand position and pinch/hover gestures to navigate menus.
@@ -87,16 +103,17 @@ class OverlayGUI:
         )
 
         # Status Info (Key, Scale, Track, BPM)
+        play_badge = "▶ PLAY" if self.is_playing else "❚❚ PAUSE"
         status_text = (
-            f"Key: {self.selected_key}  |  Scale: {self.selected_scale}  |  "
-            f"Track: {self.selected_backing_track}  |  BPM: {self.current_bpm}"
+            f"Key: {self.selected_key} | Scale: {self.selected_scale} | "
+            f"Track: {self.selected_backing_track} [{play_badge}] | BPM: {self.current_bpm}"
         )
         cv2.putText(
             frame,
             status_text,
-            (170, 32),
+            (160, 32),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
+            0.52,
             COLOR_TEXT,
             1,
             cv2.LINE_AA,

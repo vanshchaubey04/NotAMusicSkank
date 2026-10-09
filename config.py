@@ -22,26 +22,30 @@ DEFAULT_BPM = 120
 MIN_BPM = 60
 MAX_BPM = 200
 
-MUSICAL_KEYS = ["C", "D", "E", "F", "G", "A", "B"]
+# Full chromatic root keys (C through B)
+MUSICAL_KEYS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 DEFAULT_KEY = "C"
 
+# Supported scales (Major, Minor, Pentatonic, Dorian)
 SCALES = {
     "Major": [0, 2, 4, 5, 7, 9, 11],
     "Minor": [0, 2, 3, 5, 7, 8, 10],
     "Pentatonic": [0, 2, 4, 7, 9],
-    "Blues": [0, 3, 5, 6, 7, 10],
-    "Dorian": [0, 2, 3, 5, 7, 9, 10]
+    "Dorian": [0, 2, 3, 5, 7, 9, 10],
 }
 DEFAULT_SCALE = "Major"
 
-BACKING_TRACKS = [
-    "None",
-    "Acoustic Groove",
+# 3 Programmatic Backing Track Styles
+BACKING_STYLES = [
     "Lo-Fi Chill",
     "Synthwave 80s",
-    "Funk Foundation"
+    "Funk Groove",
+    "None",
 ]
-DEFAULT_BACKING_TRACK = "None"
+DEFAULT_BACKING_STYLE = "Lo-Fi Chill"
+BACKING_VOLUME = 0.55
+BACKING_TRACKS = BACKING_STYLES  # Alias for backward compatibility
+DEFAULT_BACKING_TRACK = DEFAULT_BACKING_STYLE
 
 # Drum Hit Detection Configuration
 DRUM_SOUNDS = ["Kick", "Snare", "Hi-Hat", "Crash"]

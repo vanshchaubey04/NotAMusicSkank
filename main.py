@@ -23,6 +23,7 @@ from gui import OverlayGUI
 from hand_tracker import HandTracker
 from drum_engine import DrumEngine
 from audio import AudioManager
+from music_engine import MusicEngine
 
 
 def print_macos_camera_troubleshooting() -> None:
@@ -107,14 +108,16 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
     audio = AudioManager()
     audio.initialize()
     drum_engine = DrumEngine(audio_manager=audio)
+    music_engine = MusicEngine(bpm=drum_engine.bpm)
 
     window_name = "AirBeat - Camera Test"
     window_supported = True
 
     try:
         frame_count = 0
-        print("\n[AirBeat] Starting video feed. Press 'q' or ESC in the window to quit, 'm' to toggle mapping mode.")
-        print("[AirBeat] Running loop...\n")
+        print("\n[AirBeat] Starting video feed.")
+        print("  Controls: [P] Play/Pause Backing | [K] Key | [S] Scale | [T] Style | [M] Drum Map")
+        print("            [B] BPM Mode | [G] Quantize | [C] Metronome Click | [Q/ESC] Quit\n")
 
         while True:
             ret, frame = cap.read()
@@ -136,6 +139,9 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
             # Process drum hit detection on right hand and trigger sounds
             hits = drum_engine.process_right_hand(right_hand, timestamp=now)
 
+            # Sync BPM to music engine
+            music_engine.set_bpm(drum_engine.bpm)
+
             # Draw hand landmarks, bones, and labels
             frame = tracker.draw_debug(
                 frame, left_hand, right_hand, show_fps=False, show_hud=False
@@ -146,13 +152,19 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
                 frame, right_hand, current_time=now
             )
 
-            # Render HUD overlay with FPS, mapping mode, and BPM
-            # Render HUD overlay with FPS, mapping mode, and BPM
-            gui.current_bpm = drum_engine.bpm
+            # Update GUI musical state and render HUD
+            gui.update_state(
+                key=music_engine.key,
+                scale=music_engine.scale,
+                style=music_engine.style,
+                bpm=drum_engine.bpm,
+                is_playing=music_engine.is_playing,
+            )
             fps_val = tracker.fps
+            track_tag = f"Track: {music_engine.style[:8]} ({'ON' if music_engine.is_playing else 'OFF'}) ['p']"
             status_text = (
-                f"FPS: {fps_val:.1f} | BPM: {drum_engine.bpm} [{drum_engine.bpm_mode.upper()}: 'b'] | "
-                f"Quant: {drum_engine.quantize_mode.upper()} ['g'] | Map: {drum_engine.mapping_mode.upper()} ['m']"
+                f"FPS: {fps_val:.1f} | {track_tag} | Key: {music_engine.key} ['k'] | "
+                f"Scale: {music_engine.scale} ['s'] | Quant: {drum_engine.quantize_mode.upper()} ['g']"
             )
             frame = gui.draw_hud(
                 frame,
@@ -168,6 +180,14 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
                     if key in (27, ord("q")):  # ESC or 'q'
                         print("[AirBeat] Quit signal received.")
                         break
+                    elif key in (ord("p"), ord("P"), 32):  # 'p' or space
+                        music_engine.toggle_playback()
+                    elif key in (ord("k"), ord("K")):
+                        music_engine.cycle_key()
+                    elif key in (ord("s"), ord("S")):
+                        music_engine.cycle_scale()
+                    elif key in (ord("t"), ord("T")):
+                        music_engine.cycle_style()
                     elif key in (ord("m"), ord("M")):
                         drum_engine.toggle_mapping_mode()
                     elif key in (ord("b"), ord("B")):
@@ -197,6 +217,7 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
             except Exception:
                 pass
         tracker.release()
+        music_engine.cleanup()
         drum_engine.cleanup()
         print("[AirBeat] Resources cleanly released.")
 
