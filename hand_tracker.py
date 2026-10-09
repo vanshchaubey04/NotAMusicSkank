@@ -143,8 +143,8 @@ class HandTracker:
         min_tracking_confidence: float = 0.5,
         mirrored: bool = True,
         use_one_euro_filter: bool = True,
-        filter_min_cutoff: float = 1.2,
-        filter_beta: float = 0.08,
+        filter_min_cutoff: float = 1.5,
+        filter_beta: float = 0.15,
     ) -> None:
         """Initialize HandTracker.
 

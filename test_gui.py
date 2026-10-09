@@ -248,8 +248,8 @@ def test_5_finger_drum_kit_and_sensitivity():
     assert FINGER_DRUM_MAP["pinky"] == "crash"
 
     # 2. Verify strike thresholds calibrated for effortless slight movements
-    assert DRUM_VELOCITY_THRESHOLD <= 0.40
-    assert DRUM_THUMB_VELOCITY_THRESHOLD <= 0.35
+    assert DRUM_VELOCITY_THRESHOLD <= 0.20
+    assert DRUM_THUMB_VELOCITY_THRESHOLD <= 0.15
 
     audio = AudioManager()
     audio.initialize()
@@ -306,8 +306,37 @@ def test_5_finger_drum_kit_and_sensitivity():
 
     assert len(hits) >= 1
     assert hits[0].finger == "thumb"
-    assert hits[0].velocity >= 0.30
+    assert hits[0].velocity >= 0.20
     assert len(detected_hits) >= 1
+
+    # 3. Simulate subtle index finger tap with knuckle-relative flexion
+    # Reset tracking state so previous thumb coordinates don't create delta
+    drum_engine.process_right_hand(None)
+
+    # Knuckle (#5) at y=0.50, tip (#8) moves from y=0.40 to y=0.410 in 0.05s -> dy=0.010 -> v=0.20
+    landmarks_idx1 = np.zeros((21, 3), dtype=np.float32)
+    pixel_idx1 = np.zeros((21, 2), dtype=np.float32)
+    landmarks_idx1[5] = [0.50, 0.50, 0.0]
+    landmarks_idx1[8] = [0.50, 0.40, 0.0]
+    hand_i1 = HandData("Right", 0.95, landmarks_idx1, pixel_idx1, landmarks_idx1, (500, 250, 100, 100))
+
+    landmarks_idx2 = np.zeros((21, 3), dtype=np.float32)
+    pixel_idx2 = np.zeros((21, 2), dtype=np.float32)
+    landmarks_idx2[5] = [0.50, 0.50, 0.0]
+    landmarks_idx2[8] = [0.50, 0.410, 0.0]  # Subtle 0.010 downward tap!
+    hand_i2 = HandData("Right", 0.95, landmarks_idx2, pixel_idx2, landmarks_idx2, (500, 250, 100, 100))
+
+    landmarks_idx3 = np.zeros((21, 3), dtype=np.float32)
+    pixel_idx3 = np.zeros((21, 2), dtype=np.float32)
+    landmarks_idx3[5] = [0.50, 0.50, 0.0]
+    landmarks_idx3[8] = [0.50, 0.410, 0.0]  # Decelerates
+    hand_i3 = HandData("Right", 0.95, landmarks_idx3, pixel_idx3, landmarks_idx3, (500, 250, 100, 100))
+
+    drum_engine.process_right_hand(hand_i1, timestamp=2.0)
+    drum_engine.process_right_hand(hand_i2, timestamp=2.05)
+    hits_idx = drum_engine.process_right_hand(hand_i3, timestamp=2.10)
+    assert len(hits_idx) >= 1
+    assert hits_idx[0].finger == "index"
 
     drum_engine.cleanup()
 

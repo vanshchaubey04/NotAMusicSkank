@@ -46,6 +46,8 @@ from config import (
     DRUM_MAX_ARMED_DURATION_MS,
     DRUM_SOUNDS,
     DRUM_THUMB_VELOCITY_THRESHOLD,
+    DRUM_RING_VELOCITY_THRESHOLD,
+    DRUM_PINKY_VELOCITY_THRESHOLD,
     DRUM_VELOCITY_SMOOTHING,
     DRUM_VELOCITY_THRESHOLD,
     DRUM_ZONE_BOUNDARIES,
@@ -56,12 +58,17 @@ from config import (
 from metronome import MetronomeClock
 
 
-# Right hand 5-finger landmark indices
+# Right hand 5-finger fingertip and knuckle base landmark indices
 THUMB_TIP_IDX = 4
+THUMB_BASE_IDX = 2    # Thumb MCP
 INDEX_TIP_IDX = 8
+INDEX_BASE_IDX = 5    # Index MCP
 MIDDLE_TIP_IDX = 12
+MIDDLE_BASE_IDX = 9   # Middle MCP
 RING_TIP_IDX = 16
+RING_BASE_IDX = 13    # Ring MCP
 PINKY_TIP_IDX = 20
+PINKY_BASE_IDX = 17   # Pinky MCP
 
 
 @dataclass
@@ -85,6 +92,7 @@ class FingerStrikeTracker:
         self,
         name: str,
         landmark_idx: int,
+        base_landmark_idx: Optional[int] = None,
         velocity_threshold: float = DRUM_VELOCITY_THRESHOLD,
         cooldown_ms: float = DRUM_COOLDOWN_MS,
         smoothing: float = DRUM_VELOCITY_SMOOTHING,
@@ -93,6 +101,7 @@ class FingerStrikeTracker:
     ) -> None:
         self.name = name
         self.landmark_idx = landmark_idx
+        self.base_landmark_idx = base_landmark_idx
         self.velocity_threshold = velocity_threshold
         self.cooldown_ms = cooldown_ms
         self.smoothing = smoothing
@@ -102,6 +111,7 @@ class FingerStrikeTracker:
         # Motion state
         self.prev_x: Optional[float] = None
         self.prev_y: Optional[float] = None
+        self.prev_base_y: Optional[float] = None
         self.prev_time: Optional[float] = None
         self.raw_velocity: float = 0.0
         self.velocity: float = 0.0
@@ -121,6 +131,7 @@ class FingerStrikeTracker:
         """Reset motion state when hand tracking is lost."""
         self.prev_x = None
         self.prev_y = None
+        self.prev_base_y = None
         self.prev_time = None
         self.raw_velocity = 0.0
         self.velocity = 0.0
@@ -133,6 +144,7 @@ class FingerStrikeTracker:
         norm_y: float,
         pixel_pos: Tuple[int, int],
         timestamp: float,
+        base_norm_y: Optional[float] = None,
     ) -> Optional[HitEvent]:
         """Update tracker with new frame coordinates and detect hits.
 
@@ -141,6 +153,7 @@ class FingerStrikeTracker:
             norm_y: Normalized y coordinate (0=top, 1=bottom; downward is positive).
             pixel_pos: (x, y) pixel coordinates.
             timestamp: Frame timestamp in seconds.
+            base_norm_y: Optional normalized y coordinate of knuckle MCP base for relative flexion.
 
         Returns:
             HitEvent if a hit was triggered on this frame, else None.
@@ -151,6 +164,7 @@ class FingerStrikeTracker:
         if self.prev_y is None or self.prev_time is None:
             self.prev_x = norm_x
             self.prev_y = norm_y
+            self.prev_base_y = base_norm_y
             self.prev_time = timestamp
             return None
 
@@ -158,20 +172,38 @@ class FingerStrikeTracker:
         if dt <= 0.001 or dt > 0.3:
             dt = 1.0 / 30.0
 
-        # Downward motion in image space means norm_y is increasing (dy > 0)
-        dy = norm_y - self.prev_y
+        # Absolute displacement in normalized screen coordinates (downward is positive)
+        dy_abs = norm_y - self.prev_y
         dx = norm_x - self.prev_x if self.prev_x is not None else 0.0
 
-        # For thumb, also factor in lateral/inward motion since thumb pivots at an angle
-        if self.name == "thumb":
-            if dy > 0:
-                raw_v = (dy + 0.35 * abs(dx)) / dt
-            else:
-                raw_v = dy / dt
-        else:
-            raw_v = dy / dt
+        # Relative flexion displacement (fingertip moving downward relative to knuckle)
+        dy_rel = 0.0
+        if base_norm_y is not None and self.prev_base_y is not None:
+            rel_curr = norm_y - base_norm_y
+            rel_prev = self.prev_y - self.prev_base_y
+            dy_rel = rel_curr - rel_prev
+        self.prev_base_y = base_norm_y
 
-        # Exponential moving average smoothing
+        if self.name == "thumb":
+            # Thumb taps pivot in a downward-inward arc: combine downward flexion & lateral flick
+            flick_y = max(dy_abs, dy_rel, 0.0)
+            flick_mag = flick_y + 0.60 * abs(dx)
+            raw_v = flick_mag / dt if (flick_y > 0.001 or abs(dx) > 0.003) else (dy_abs / dt)
+        else:
+            # Combine absolute motion (entire hand downward) and knuckle-relative finger flexion
+            if dy_abs > 0 and dy_rel > 0:
+                dy_eff = max(dy_abs, dy_rel, 0.70 * dy_abs + 0.60 * dy_rel)
+            elif dy_abs > 0:
+                dy_eff = dy_abs
+            elif dy_rel > 0:
+                # Finger flicked down even if palm/wrist moved slightly upward
+                dy_eff = dy_rel
+            else:
+                dy_eff = min(dy_abs, dy_rel)
+            raw_v = dy_eff / dt
+
+        # Fast-response exponential moving average
+        prev_smoothed_v = self.velocity
         smoothed_v = (
             self.smoothing * raw_v + (1.0 - self.smoothing) * self.velocity
         )
@@ -180,6 +212,9 @@ class FingerStrikeTracker:
         self.prev_x = norm_x
         self.prev_y = norm_y
         self.prev_time = timestamp
+
+        # Instantaneous effective velocity ensures quick flicks aren't dampened
+        effective_v = max(self.velocity, self.raw_velocity)
 
         hit_event: Optional[HitEvent] = None
         time_since_hit_ms = (timestamp - self.last_hit_time) * 1000.0
@@ -194,30 +229,30 @@ class FingerStrikeTracker:
 
         # State: IDLE -> check for fast downward velocity
         if self.state == "IDLE":
-            if self.velocity >= self.velocity_threshold:
+            if effective_v >= self.velocity_threshold:
                 self.state = "ARMED"
                 self.arm_time = timestamp
-                self.peak_velocity = self.velocity
+                self.peak_velocity = effective_v
 
         # State: ARMED -> track downward strike peak and trigger on deceleration/reversal
         elif self.state == "ARMED":
-            if self.velocity > self.peak_velocity:
-                self.peak_velocity = self.velocity
+            if effective_v > self.peak_velocity:
+                self.peak_velocity = effective_v
 
             armed_duration_ms = (timestamp - self.arm_time) * 1000.0
 
             # Conditions for hit completion:
-            # 1. Velocity reversal: velocity drops <= 0
-            # 2. Deceleration: velocity drops below decel_ratio of peak_velocity or raw drops sharply
+            # 1. Any downward speed drop or reversal: raw drops below peak or drops below zero
+            # 2. Deceleration: dropped below decel_ratio of peak_velocity or smoothed begins to fall
             # 3. Timeout in armed state: exceeded max_armed_ms while slowing down
-            is_reversal = (self.velocity <= 0.0) or (self.raw_velocity <= 0.0)
+            is_reversal = (self.raw_velocity <= 0.0) or (self.velocity <= 0.0)
             is_decel = (
-                (self.velocity <= (self.decel_ratio * self.peak_velocity))
-                or (self.raw_velocity <= (0.40 * self.peak_velocity))
+                (self.raw_velocity <= (self.decel_ratio * self.peak_velocity))
+                or (self.velocity < prev_smoothed_v)
             )
             is_timeout = (
                 armed_duration_ms >= self.max_armed_ms
-                and self.velocity < self.peak_velocity
+                and effective_v < self.peak_velocity
             )
 
             if is_reversal or is_decel or is_timeout:
@@ -292,6 +327,7 @@ class DrumEngine:
         self.thumb_tracker = FingerStrikeTracker(
             name="thumb",
             landmark_idx=THUMB_TIP_IDX,
+            base_landmark_idx=THUMB_BASE_IDX,
             velocity_threshold=DRUM_THUMB_VELOCITY_THRESHOLD,
             cooldown_ms=self.cooldown_ms,
             smoothing=self.velocity_smoothing,
@@ -300,6 +336,7 @@ class DrumEngine:
         self.index_tracker = FingerStrikeTracker(
             name="index",
             landmark_idx=INDEX_TIP_IDX,
+            base_landmark_idx=INDEX_BASE_IDX,
             velocity_threshold=self.velocity_threshold,
             cooldown_ms=self.cooldown_ms,
             smoothing=self.velocity_smoothing,
@@ -308,6 +345,7 @@ class DrumEngine:
         self.middle_tracker = FingerStrikeTracker(
             name="middle",
             landmark_idx=MIDDLE_TIP_IDX,
+            base_landmark_idx=MIDDLE_BASE_IDX,
             velocity_threshold=self.velocity_threshold,
             cooldown_ms=self.cooldown_ms,
             smoothing=self.velocity_smoothing,
@@ -316,7 +354,8 @@ class DrumEngine:
         self.ring_tracker = FingerStrikeTracker(
             name="ring",
             landmark_idx=RING_TIP_IDX,
-            velocity_threshold=self.velocity_threshold,
+            base_landmark_idx=RING_BASE_IDX,
+            velocity_threshold=DRUM_RING_VELOCITY_THRESHOLD,
             cooldown_ms=self.cooldown_ms,
             smoothing=self.velocity_smoothing,
             decel_ratio=self.decel_ratio,
@@ -324,7 +363,8 @@ class DrumEngine:
         self.pinky_tracker = FingerStrikeTracker(
             name="pinky",
             landmark_idx=PINKY_TIP_IDX,
-            velocity_threshold=self.velocity_threshold,
+            base_landmark_idx=PINKY_BASE_IDX,
+            velocity_threshold=DRUM_PINKY_VELOCITY_THRESHOLD,
             cooldown_ms=self.cooldown_ms,
             smoothing=self.velocity_smoothing,
             decel_ratio=self.decel_ratio,
@@ -432,11 +472,17 @@ class DrumEngine:
         # Update all 5 finger strike trackers (Thumb, Index, Middle, Ring, Pinky)
         for tr in self.finger_trackers:
             idx = tr.landmark_idx
+            base_idx = tr.base_landmark_idx
             norm_x = float(landmarks[idx, 0])
             norm_y = float(landmarks[idx, 1])
+            base_norm_y = (
+                float(landmarks[base_idx, 1])
+                if (base_idx is not None and landmarks.shape[0] > base_idx)
+                else None
+            )
             px = (int(pixel_landmarks[idx, 0]), int(pixel_landmarks[idx, 1]))
 
-            hit = tr.update(norm_x, norm_y, px, timestamp)
+            hit = tr.update(norm_x, norm_y, px, timestamp, base_norm_y=base_norm_y)
             if hit is not None:
                 self._handle_hit_trigger(hit)
                 hits.append(hit)
@@ -807,9 +853,9 @@ class DrumEngine:
                 cv2.LINE_AA,
             )
 
-            # Downward motion vector arrow on fast downward flick
-            if v > 0.25:
-                arrow_len = min(50, int(v * 22))
+            # Downward motion vector arrow on downward flick
+            if v > 0.10:
+                arrow_len = min(60, int(v * 45))
                 cv2.arrowedLine(
                     frame,
                     (px, py),
@@ -974,7 +1020,7 @@ class DrumEngine:
     ) -> None:
         """Render a compact live velocity bar, threshold mark, and state badge for a finger."""
         bar_h = 7
-        max_meter_v = max(2.5, tracker.velocity_threshold * 2.5)
+        max_meter_v = max(0.85, tracker.velocity_threshold * 2.5)
 
         target_drum = self.audio.resolve_drum(
             tracker.name, tracker.current_norm_x, self.mapping_mode

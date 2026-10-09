@@ -59,14 +59,19 @@ FINGER_DRUM_MAP = {
     "pinky": "crash",
 }
 
-# Hit detection parameters - highly sensitive for effortless slight movements
-DRUM_VELOCITY_THRESHOLD = 0.38     # Downward y-velocity (norm units/sec) to arm a strike (sensitive)
-DRUM_THUMB_VELOCITY_THRESHOLD = 0.32 # Calibrated for natural thumb movement
-DRUM_COOLDOWN_MS = 110            # Per-finger strike cooldown in milliseconds
-DRUM_VELOCITY_SMOOTHING = 0.65    # Velocity EMA smoothing factor (0.0=sluggish, 1.0=raw)
-DRUM_DECEL_RATIO = 0.55           # Deceleration fraction of peak velocity to trigger hit
-DRUM_FLASH_DURATION_MS = 160      # Visual screen flash duration in milliseconds
-DRUM_MAX_ARMED_DURATION_MS = 180  # Maximum time in armed state before forcing strike eval
+# Hit detection parameters - ultra-sensitive hair-trigger for effortless slight movements
+DRUM_VELOCITY_THRESHOLD = 0.14          # Downward velocity threshold for index/middle (norm units/sec)
+DRUM_THUMB_VELOCITY_THRESHOLD = 0.11    # Ultra-sensitive threshold for thumb
+DRUM_RING_VELOCITY_THRESHOLD = 0.13     # Ultra-sensitive threshold for ring finger
+DRUM_PINKY_VELOCITY_THRESHOLD = 0.11    # Ultra-sensitive threshold for pinky finger
+DRUM_COOLDOWN_MS = 95                   # Fast, responsive per-finger strike cooldown (ms)
+DRUM_VELOCITY_SMOOTHING = 0.75          # Fast, responsive EMA smoothing factor
+DRUM_DECEL_RATIO = 0.85                 # Deceleration ratio (triggers immediately when velocity begins slowing)
+DRUM_FLASH_DURATION_MS = 140            # Visual screen flash duration in milliseconds
+DRUM_MAX_ARMED_DURATION_MS = 110        # Fast evaluation window in armed state
+DRUM_MIN_VOLUME = 0.50                  # Minimum volume at trigger threshold (audible soft taps)
+DRUM_MAX_VOLUME = 1.0                   # Maximum volume for hard strikes
+DRUM_MAX_VELOCITY = 1.0                 # Velocity saturation point for max volume (effortless ceiling)
 
 # Audio Engine Settings
 AUDIO_SAMPLE_RATE = 44100
@@ -74,14 +79,9 @@ AUDIO_BUFFER_SIZE = 256           # Low-latency buffer size (256 samples ~ 5.8ms
 AUDIO_NUM_CHANNELS = 16           # Polyphonic simultaneous playback channels
 SOUNDS_DIR = "assets/sounds"      # Directory for custom wav samples
 
-# Drum Mapping & Velocity Dynamics
-# "finger": 5-finger kit (thumb=kick, index=snare, middle=hi-hat, ring=tom, pinky=crash)
-# "zones":  horizontal zones (left=kick, middle=snare, right=hi-hat)
+# Drum Mapping Modes
 DRUM_MAPPING_MODE = "finger"
 DRUM_ZONE_BOUNDARIES = (0.60, 0.80)  # (left_cutoff, right_cutoff) in normalized screen X
-DRUM_MIN_VOLUME = 0.45            # Minimum volume at trigger threshold (audible soft taps)
-DRUM_MAX_VOLUME = 1.0             # Maximum volume for hard strikes
-DRUM_MAX_VELOCITY = 1.8           # Velocity saturation point for max volume (effortless ceiling)
 
 # Metronome / Master Clock Settings
 METRONOME_ENABLED = True
