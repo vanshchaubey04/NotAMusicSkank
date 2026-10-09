@@ -104,19 +104,16 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
     gui = OverlayGUI()
     tracker = HandTracker(mirrored=MIRROR_CAMERA, use_one_euro_filter=True)
     tracker.initialize()
-    drum_engine = DrumEngine()
     audio = AudioManager()
-
-    print("[AirBeat] Initializing subsystems (scaffold mode)...")
-    # Lazy init components
     audio.initialize()
+    drum_engine = DrumEngine(audio_manager=audio)
 
     window_name = "AirBeat - Camera Test"
     window_supported = True
 
     try:
         frame_count = 0
-        print("\n[AirBeat] Starting video feed. Press 'q' or ESC in the window to quit.")
+        print("\n[AirBeat] Starting video feed. Press 'q' or ESC in the window to quit, 'm' to toggle mapping mode.")
         print("[AirBeat] Running loop...\n")
 
         while True:
@@ -136,7 +133,7 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
             # Process hand landmarks (left and right hands separated, 1€ smoothed)
             left_hand, right_hand = tracker.process_frame(frame, timestamp=now)
 
-            # Process drum hit detection on right hand
+            # Process drum hit detection on right hand and trigger sounds
             hits = drum_engine.process_right_hand(right_hand, timestamp=now)
 
             # Draw hand landmarks, bones, and labels
@@ -144,15 +141,18 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
                 frame, left_hand, right_hand, show_fps=False, show_hud=False
             )
 
-            # Draw drum tuning overlay (live velocity meters, fingertip tags, flash)
+            # Draw drum tuning overlay (live velocity meters, zones, fingertip tags, flash)
             frame = drum_engine.draw_debug_overlay(
                 frame, right_hand, current_time=now
             )
 
-            # Render HUD overlay with FPS and current BPM
+            # Render HUD overlay with FPS, mapping mode, and BPM
             gui.current_bpm = drum_engine.bpm
             fps_val = tracker.fps
-            status_text = f"FPS: {fps_val:.1f} | Frame: {frame_count} | Press 'q' to quit"
+            status_text = (
+                f"FPS: {fps_val:.1f} | Mode: {drum_engine.mapping_mode.upper()} ('m' to toggle) | "
+                f"Frame: {frame_count} | Press 'q' to quit"
+            )
             frame = gui.draw_hud(
                 frame,
                 camera_ok=True,
@@ -167,6 +167,8 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
                     if key in (27, ord("q")):  # ESC or 'q'
                         print("[AirBeat] Quit signal received.")
                         break
+                    elif key in (ord("m"), ord("M")):
+                        drum_engine.toggle_mapping_mode()
                 except cv2.error as cv_err:
                     print(f"[AirBeat] Window display unavailable: {cv_err}")
                     window_supported = False
