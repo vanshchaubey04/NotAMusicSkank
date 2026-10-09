@@ -102,7 +102,8 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
         return False
 
     gui = OverlayGUI()
-    tracker = HandTracker()
+    tracker = HandTracker(mirrored=MIRROR_CAMERA, use_one_euro_filter=True)
+    tracker.initialize()
     drum_engine = DrumEngine()
     audio = AudioManager()
 
@@ -130,11 +131,21 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
             if MIRROR_CAMERA:
                 frame = cv2.flip(frame, 1)
 
-            # Render scaffold HUD overlay
+            # Process hand landmarks (left and right hands separated, 1€ smoothed)
+            left_hand, right_hand = tracker.process_frame(frame)
+
+            # Draw hand landmarks, bones, and labels
+            frame = tracker.draw_debug(
+                frame, left_hand, right_hand, show_fps=False, show_hud=False
+            )
+
+            # Render HUD overlay with FPS
+            fps_val = tracker.fps
+            status_text = f"FPS: {fps_val:.1f} | Frame: {frame_count} | Press 'q' to quit"
             frame = gui.draw_hud(
                 frame,
                 camera_ok=True,
-                status_message=f"Press 'q' to quit | Frame: {frame_count}",
+                status_message=status_text,
             )
 
             # Try displaying window
