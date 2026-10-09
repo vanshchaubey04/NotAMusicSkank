@@ -147,11 +147,12 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
             )
 
             # Render HUD overlay with FPS, mapping mode, and BPM
+            # Render HUD overlay with FPS, mapping mode, and BPM
             gui.current_bpm = drum_engine.bpm
             fps_val = tracker.fps
             status_text = (
-                f"FPS: {fps_val:.1f} | Mode: {drum_engine.mapping_mode.upper()} ('m' to toggle) | "
-                f"Frame: {frame_count} | Press 'q' to quit"
+                f"FPS: {fps_val:.1f} | BPM: {drum_engine.bpm} [{drum_engine.bpm_mode.upper()}: 'b'] | "
+                f"Quant: {drum_engine.quantize_mode.upper()} ['g'] | Map: {drum_engine.mapping_mode.upper()} ['m']"
             )
             frame = gui.draw_hud(
                 frame,
@@ -169,6 +170,12 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
                         break
                     elif key in (ord("m"), ord("M")):
                         drum_engine.toggle_mapping_mode()
+                    elif key in (ord("b"), ord("B")):
+                        drum_engine.toggle_bpm_mode()
+                    elif key in (ord("g"), ord("G")):
+                        drum_engine.toggle_quantize_mode()
+                    elif key in (ord("c"), ord("C")):
+                        drum_engine.toggle_metronome_click()
                 except cv2.error as cv_err:
                     print(f"[AirBeat] Window display unavailable: {cv_err}")
                     window_supported = False
@@ -190,7 +197,7 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
             except Exception:
                 pass
         tracker.release()
-        audio.cleanup()
+        drum_engine.cleanup()
         print("[AirBeat] Resources cleanly released.")
 
 

@@ -4,13 +4,17 @@ Detects air drumming hits from the right hand's index and middle fingertips:
 - A hit is registered when high downward y-velocity is followed by deceleration or reversal.
 - Enforces an independent per-finger cooldown (configurable in config.py, ~120ms).
 - Plays low-latency drum samples (Kick, Snare, Hi-Hat) scaled by hit velocity.
-- Supports two mappings:
+- Supports two drum mappings:
   1. "finger": Index finger -> Kick, Middle finger -> Snare.
   2. "zones":  Horizontal hand zones (Left -> Kick, Middle -> Snare, Right -> Hi-Hat).
-- Prints "HIT index velocity=X" to console.
-- Renders an interactive screen flash and live velocity debug overlay for threshold tuning.
+- Threaded metronome/clock with adjustable BPM:
+  1. Mode (a) "tap": Tap tempo from time between hits (average of last 4 intervals).
+  2. Mode (b) "height": Right hand height mapped to BPM 60-180 with exponential smoothing.
+- Optional hit quantization to 1/8 or 1/16 note beat grid.
+- Live on-screen BPM display, beat pulse animation, and velocity tuning meters.
 """
 
+from collections import deque
 from dataclasses import dataclass
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -20,6 +24,13 @@ import numpy as np
 
 from audio import AudioManager
 from config import (
+    BPM_CONTROL_MODE,
+    BPM_HEIGHT_MAX_Y,
+    BPM_HEIGHT_MIN_Y,
+    BPM_HEIGHT_SMOOTHING,
+    BPM_MAX,
+    BPM_MIN,
+    BPM_TAP_HISTORY_COUNT,
     COLOR_BG_DARK,
     COLOR_HIT_FLASH,
     COLOR_PRIMARY,
@@ -37,7 +48,11 @@ from config import (
     DRUM_VELOCITY_SMOOTHING,
     DRUM_VELOCITY_THRESHOLD,
     DRUM_ZONE_BOUNDARIES,
+    METRONOME_CLICK_ENABLED,
+    METRONOME_CLICK_VOLUME,
+    QUANTIZE_MODE,
 )
+from metronome import MetronomeClock
 
 
 INDEX_TIP_IDX = 8
@@ -55,6 +70,7 @@ class HitEvent:
     norm_x: float = 0.5  # Normalized x coordinate of fingertip at hit
     drum: str = "kick"  # Triggered drum sound ("kick", "snare", "hihat")
     volume: float = 1.0  # Dynamic playback volume [0.0, 1.0]
+    quantized: bool = False  # Whether playback was scheduled to a beat grid
 
 
 class FingerStrikeTracker:
@@ -91,7 +107,7 @@ class FingerStrikeTracker:
         self.last_hit_time: float = 0.0
         self.last_hit_velocity: float = 0.0
 
-        # Pixel & normalized position cache
+        # Position caches
         self.current_pixel_pos: Tuple[int, int] = (0, 0)
         self.current_norm_x: float = 0.5
 
@@ -173,7 +189,7 @@ class FingerStrikeTracker:
             armed_duration_ms = (timestamp - self.arm_time) * 1000.0
 
             # Conditions for hit completion:
-            # 1. Velocity reversal: velocity drops <= 0 (rebound / bounce back upward)
+            # 1. Velocity reversal: velocity drops <= 0
             # 2. Deceleration: velocity drops below decel_ratio of peak_velocity or raw drops sharply
             # 3. Timeout in armed state: exceeded max_armed_ms while slowing down
             is_reversal = (self.velocity <= 0.0) or (self.raw_velocity <= 0.0)
@@ -205,11 +221,12 @@ class FingerStrikeTracker:
 
 
 class DrumEngine:
-    """Manages right-hand air drumming hit detection, visual flash, audio triggers, and debug overlays."""
+    """Manages right-hand hit detection, threaded metronome, BPM modes, audio, and visual overlays."""
 
     def __init__(
         self,
         audio_manager: Optional[AudioManager] = None,
+        clock: Optional[MetronomeClock] = None,
         bpm: int = DEFAULT_BPM,
         velocity_threshold: float = DRUM_VELOCITY_THRESHOLD,
         cooldown_ms: float = DRUM_COOLDOWN_MS,
@@ -218,6 +235,8 @@ class DrumEngine:
         flash_duration_ms: float = DRUM_FLASH_DURATION_MS,
         mapping_mode: str = DRUM_MAPPING_MODE,
         zone_boundaries: Tuple[float, float] = DRUM_ZONE_BOUNDARIES,
+        bpm_control_mode: str = BPM_CONTROL_MODE,
+        quantize_mode: str = QUANTIZE_MODE,
     ) -> None:
         self.bpm = bpm
         self.velocity_threshold = velocity_threshold
@@ -227,13 +246,29 @@ class DrumEngine:
         self.flash_duration_ms = flash_duration_ms
         self.mapping_mode = mapping_mode
         self.zone_boundaries = zone_boundaries
+        self.bpm_mode = bpm_control_mode
+        self.quantize_mode = quantize_mode
 
         # Audio Manager
         if audio_manager is None:
-            self.audio = AudioManager(mapping_mode=self.mapping_mode, zone_boundaries=self.zone_boundaries)
+            self.audio = AudioManager(
+                mapping_mode=self.mapping_mode, zone_boundaries=self.zone_boundaries
+            )
             self.audio.initialize()
         else:
             self.audio = audio_manager
+
+        # Threaded Metronome Clock
+        if clock is None:
+            self.clock = MetronomeClock(
+                bpm=self.bpm,
+                click_enabled=METRONOME_CLICK_ENABLED,
+                click_volume=METRONOME_CLICK_VOLUME,
+                quantize_mode=self.quantize_mode,
+            )
+            self.clock.start()
+        else:
+            self.clock = clock
 
         # Per-finger trackers
         self.index_tracker = FingerStrikeTracker(
@@ -256,8 +291,21 @@ class DrumEngine:
         # Active flash events for visual screen flash
         self._active_flashes: List[Dict[str, Any]] = []
 
-        # BPM estimation tap timestamps
-        self._tap_timestamps: List[float] = []
+        # BPM Mode (a): Tap tempo state (average of last 4 intervals)
+        self._tap_hit_times: deque = deque(maxlen=8)
+        self._tap_intervals: deque = deque(maxlen=BPM_TAP_HISTORY_COUNT)
+
+        # BPM Mode (b): Hand height state
+        self._smooth_bpm: float = float(bpm)
+        self.current_hand_height_frac: float = 0.5
+        self.target_height_bpm: float = float(bpm)
+
+    def set_bpm(self, new_bpm: int) -> None:
+        """Update BPM across engine and threaded metronome clock."""
+        clamped = max(BPM_MIN, min(BPM_MAX, int(new_bpm)))
+        self.bpm = clamped
+        if self.clock:
+            self.clock.set_bpm(clamped)
 
     def set_mapping_mode(self, mode: str) -> None:
         """Switch between 'finger' and 'zones' mapping modes."""
@@ -268,17 +316,41 @@ class DrumEngine:
             print(f"[DrumEngine] Mapping mode changed to: {self.mapping_mode.upper()}")
 
     def toggle_mapping_mode(self) -> str:
-        """Toggle between 'finger' and 'zones' modes."""
         new_mode = "zones" if self.mapping_mode == "finger" else "finger"
         self.set_mapping_mode(new_mode)
         return self.mapping_mode
+
+    def toggle_bpm_mode(self) -> str:
+        """Toggle between (a) tap tempo and (b) hand height BPM control."""
+        self.bpm_mode = "height" if self.bpm_mode == "tap" else "tap"
+        print(f"[DrumEngine] BPM control mode: {self.bpm_mode.upper()}")
+        return self.bpm_mode
+
+    def toggle_quantize_mode(self) -> str:
+        """Cycle hit quantization between 'none', '1/8', and '1/16'."""
+        if self.clock:
+            self.quantize_mode = self.clock.toggle_quantize()
+        else:
+            modes = ["none", "1/8", "1/16"]
+            idx = modes.index(self.quantize_mode) if self.quantize_mode in modes else 0
+            self.quantize_mode = modes[(idx + 1) % len(modes)]
+        print(f"[DrumEngine] Quantize mode: {self.quantize_mode.upper()}")
+        return self.quantize_mode
+
+    def toggle_metronome_click(self) -> bool:
+        """Toggle metronome audio click sound."""
+        if self.clock:
+            state = self.clock.toggle_click()
+            print(f"[DrumEngine] Metronome click: {'ON' if state else 'OFF'}")
+            return state
+        return False
 
     def process_right_hand(
         self,
         right_hand_data: Optional[Any],
         timestamp: Optional[float] = None,
     ) -> List[HitEvent]:
-        """Process right hand landmarks to detect index and middle finger hits.
+        """Process right hand landmarks: update BPM and detect index/middle hits.
 
         Args:
             right_hand_data: HandData instance from HandTracker (or None).
@@ -294,6 +366,10 @@ class DrumEngine:
             self.index_tracker.reset()
             self.middle_tracker.reset()
             return []
+
+        # BPM Control Mode (b): Hand height mapped to 60-180 BPM with smoothing
+        if self.bpm_mode == "height":
+            self._update_bpm_from_height(right_hand_data)
 
         # Extract landmarks: normalized (21, 3) and pixel (21, 2)
         landmarks = right_hand_data.landmarks
@@ -333,22 +409,88 @@ class DrumEngine:
 
         return hits
 
-    def _handle_hit_trigger(self, hit: HitEvent) -> None:
-        """Trigger audio sample, scale volume, log to console, and register screen flash."""
-        drum_name, volume = self.audio.trigger_hit(
-            finger_name=hit.finger,
-            velocity=hit.velocity,
-            norm_x=hit.norm_x,
-            mapping_mode=self.mapping_mode,
+    def _update_bpm_from_height(self, right_hand_data: Any) -> None:
+        """Map right hand vertical position to BPM 60-180 with EMA smoothing."""
+        # Use wrist (landmark 0) for stable hand elevation
+        wrist_y = float(right_hand_data.landmarks[0, 1])
+
+        # In image coordinates, y=0 is top, y=1 is bottom
+        # High hand (y <= BPM_HEIGHT_MIN_Y) -> 180 BPM
+        # Low hand (y >= BPM_HEIGHT_MAX_Y) -> 60 BPM
+        y_clamped = max(BPM_HEIGHT_MIN_Y, min(BPM_HEIGHT_MAX_Y, wrist_y))
+        height_span = BPM_HEIGHT_MAX_Y - BPM_HEIGHT_MIN_Y
+        norm_height = (BPM_HEIGHT_MAX_Y - y_clamped) / height_span
+        self.current_hand_height_frac = norm_height
+
+        target = BPM_MIN + norm_height * (BPM_MAX - BPM_MIN)
+        self.target_height_bpm = target
+
+        # Exponential moving average smoothing
+        self._smooth_bpm = (
+            BPM_HEIGHT_SMOOTHING * target
+            + (1.0 - BPM_HEIGHT_SMOOTHING) * self._smooth_bpm
         )
+        smoothed_int = int(round(self._smooth_bpm))
+        if smoothed_int != self.bpm:
+            self.set_bpm(smoothed_int)
+
+    def _update_bpm_from_tap(self, timestamp: float) -> None:
+        """Update tap tempo from time between hits (average of last 4 intervals)."""
+        if self._tap_hit_times:
+            dt = timestamp - self._tap_hit_times[-1]
+            # Valid rhythmic interval between 150ms and 2.0s
+            if 0.15 <= dt <= 2.0:
+                self._tap_intervals.append(dt)
+                if len(self._tap_intervals) >= BPM_TAP_HISTORY_COUNT:
+                    avg_dt = sum(self._tap_intervals) / float(len(self._tap_intervals))
+                    calc_bpm = int(round(60.0 / avg_dt))
+                    new_bpm = max(BPM_MIN, min(BPM_MAX, calc_bpm))
+                    self.set_bpm(new_bpm)
+                    print(
+                        f"[DrumEngine] Tap tempo updated: {new_bpm} BPM "
+                        f"(avg of {len(self._tap_intervals)} intervals: {avg_dt:.3f}s)"
+                    )
+            else:
+                # Reset interval chain if pause is too long
+                self._tap_intervals.clear()
+
+        self._tap_hit_times.append(timestamp)
+
+    def _handle_hit_trigger(self, hit: HitEvent) -> None:
+        """Process hit event: resolve drum, scale volume, quantize/play, and flash."""
+        drum_name = self.audio.resolve_drum(hit.finger, hit.norm_x, self.mapping_mode)
+        volume = self.audio.velocity_to_volume(hit.velocity)
         hit.drum = drum_name
         hit.volume = volume
 
-        # Print exact requested console output with drum and volume details
-        print(f"HIT {hit.finger} velocity={hit.velocity:.2f} [{drum_name.upper()} vol={int(volume * 100)}%]")
+        # BPM Control Mode (a): Tap tempo interval calculation
+        if self.bpm_mode == "tap":
+            self._update_bpm_from_tap(hit.timestamp)
+
+        # Trigger or quantize hit playback
+        is_immediate = True
+        if self.clock is not None:
+            is_immediate = self.clock.schedule_hit(
+                drum_name=drum_name,
+                volume=volume,
+                play_fn=self.audio.play_drum,
+                timestamp=hit.timestamp,
+            )
+        else:
+            self.audio.play_drum(drum_name, volume=volume)
+
+        hit.quantized = not is_immediate
+
+        # Console logging
+        q_tag = ""
+        if not is_immediate:
+            q_tag = f" [{self.quantize_mode} Quantized]"
+        print(
+            f"HIT {hit.finger} velocity={hit.velocity:.2f} "
+            f"[{drum_name.upper()} vol={int(volume * 100)}%]{q_tag}"
+        )
 
         self._register_flash(hit)
-        self._update_bpm_tap(hit.timestamp)
 
     def _register_flash(self, hit: HitEvent) -> None:
         """Register a visual screen flash event."""
@@ -358,25 +500,11 @@ class DrumEngine:
                 "drum": hit.drum,
                 "velocity": hit.velocity,
                 "volume": hit.volume,
+                "quantized": hit.quantized,
                 "timestamp": hit.timestamp,
                 "pixel_pos": hit.pixel_pos,
             }
         )
-
-    def _update_bpm_tap(self, timestamp: float) -> None:
-        """Update estimated BPM from rhythmic hit cadence."""
-        self._tap_timestamps.append(timestamp)
-        # Keep recent taps within 3 seconds
-        self._tap_timestamps = [t for t in self._tap_timestamps if timestamp - t <= 3.0]
-        if len(self._tap_timestamps) >= 3:
-            intervals = [
-                self._tap_timestamps[i] - self._tap_timestamps[i - 1]
-                for i in range(1, len(self._tap_timestamps))
-            ]
-            avg_interval = sum(intervals) / len(intervals)
-            if 0.2 <= avg_interval <= 1.5:
-                estimated_bpm = int(60.0 / avg_interval)
-                self.bpm = max(60, min(200, estimated_bpm))
 
     def draw_debug_overlay(
         self,
@@ -384,16 +512,7 @@ class DrumEngine:
         right_hand_data: Optional[Any],
         current_time: Optional[float] = None,
     ) -> np.ndarray:
-        """Render live velocity meters, horizontal zones, fingertip vectors, and screen flash effects.
-
-        Args:
-            frame: OpenCV BGR image frame.
-            right_hand_data: HandData from HandTracker (or None).
-            current_time: Current timestamp in seconds.
-
-        Returns:
-            Frame with debug graphics and hit flashes rendered.
-        """
+        """Render live velocity meters, metronome beat HUD, zones, and screen flash effects."""
         if current_time is None:
             current_time = time.time()
 
@@ -403,17 +522,58 @@ class DrumEngine:
         if self.mapping_mode == "zones":
             self._render_horizontal_zones(frame, w, h, right_hand_data)
 
-        # 2. Render Screen Flash Effect if any hits are active
+        # 2. Render Height Gauge if in "height" BPM mode
+        if self.bpm_mode == "height":
+            self._render_height_bpm_gauge(frame, w, h)
+
+        # 3. Render Screen Flash Effect if any hits are active
         frame = self._render_screen_flashes(frame, current_time)
 
-        # 3. Render Live Fingertip Velocity Indicators on Hand
+        # 4. Render Live Fingertip Velocity Indicators on Hand
         if right_hand_data is not None:
             self._render_fingertip_indicators(frame)
 
-        # 4. Render Tuning HUD Panel (top right)
+        # 5. Render Master Clock & Drum Tuning HUD Panel
         self._render_tuning_hud(frame, w, h, current_time)
 
         return frame
+
+    def _render_height_bpm_gauge(self, frame: np.ndarray, w: int, h: int) -> None:
+        """Draw vertical tempo gauge bar on the right side for height-based BPM control."""
+        bar_x = w - 18
+        y_top = int(BPM_HEIGHT_MIN_Y * h)
+        y_bot = int(BPM_HEIGHT_MAX_Y * h)
+        bar_h = y_bot - y_top
+
+        # Background track
+        cv2.rectangle(frame, (bar_x, y_top), (bar_x + 8, y_bot), (35, 35, 45), -1)
+        cv2.rectangle(frame, (bar_x, y_top), (bar_x + 8, y_bot), (90, 90, 110), 1)
+
+        # Active height indicator
+        curr_y = int(y_bot - self.current_hand_height_frac * bar_h)
+        cv2.line(frame, (bar_x - 6, curr_y), (bar_x + 14, curr_y), (0, 255, 200), 2)
+
+        # Labels
+        cv2.putText(
+            frame,
+            "180",
+            (bar_x - 32, y_top + 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.35,
+            (0, 255, 200),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            "60",
+            (bar_x - 26, y_bot),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.35,
+            (160, 160, 180),
+            1,
+            cv2.LINE_AA,
+        )
 
     def _render_horizontal_zones(
         self,
@@ -453,7 +613,7 @@ class DrumEngine:
         cv2.line(frame, (b1_x, 50), (b1_x, h), (120, 120, 140), 1, cv2.LINE_AA)
         cv2.line(frame, (b2_x, 50), (b2_x, h), (120, 120, 140), 1, cv2.LINE_AA)
 
-        # Zone header tags at the bottom
+        # Zone labels at bottom
         y_label = h - 16
         cv2.putText(
             frame,
@@ -505,8 +665,12 @@ class DrumEngine:
                 border_thick = int(14 * alpha)
                 if border_thick > 0:
                     overlay = frame.copy()
-                    cv2.rectangle(overlay, (0, 0), (w - 1, h - 1), COLOR_HIT_FLASH, border_thick)
-                    cv2.addWeighted(overlay, alpha * 0.7, frame, 1.0 - (alpha * 0.7), 0, frame)
+                    cv2.rectangle(
+                        overlay, (0, 0), (w - 1, h - 1), COLOR_HIT_FLASH, border_thick
+                    )
+                    cv2.addWeighted(
+                        overlay, alpha * 0.7, frame, 1.0 - (alpha * 0.7), 0, frame
+                    )
 
                 # Expanding ripple circle at fingertip
                 px, py = fl["pixel_pos"]
@@ -517,11 +681,21 @@ class DrumEngine:
                     int(COLOR_HIT_FLASH[1] * ripple_alpha),
                     int(COLOR_HIT_FLASH[2] * ripple_alpha),
                 )
-                cv2.circle(frame, (px, py), radius, ripple_color, max(1, int(3 * alpha)), cv2.LINE_AA)
+                cv2.circle(
+                    frame,
+                    (px, py),
+                    radius,
+                    ripple_color,
+                    max(1, int(3 * alpha)),
+                    cv2.LINE_AA,
+                )
 
-                # Hit text tag
+                # Hit tag text
                 vol_pct = int(fl.get("volume", 1.0) * 100)
-                tag_text = f"HIT {fl['drum'].upper()}! (v={fl['velocity']:.2f}, vol={vol_pct}%)"
+                q_note = " (Q)" if fl.get("quantized") else ""
+                tag_text = (
+                    f"HIT {fl['drum'].upper()}! (v={fl['velocity']:.2f}, vol={vol_pct}%{q_note})"
+                )
                 (tw, th), _ = cv2.getTextSize(tag_text, cv2.FONT_HERSHEY_DUPLEX, 0.7, 2)
                 cv2.putText(
                     frame,
@@ -548,12 +722,13 @@ class DrumEngine:
 
             v = tr.velocity
             sign = "+" if v >= 0 else ""
-            target_drum = self.audio.resolve_drum(tr.name, tr.current_norm_x, self.mapping_mode)
+            target_drum = self.audio.resolve_drum(
+                tr.name, tr.current_norm_x, self.mapping_mode
+            )
             label = f"{tr.name[:3]}->{target_drum[:4].upper()}: {sign}{v:.2f}"
 
-            # Color coding: Green if moving down fast, Red if moving up, White otherwise
             if tr.state == "ARMED":
-                badge_bg = (0, 165, 255)  # Orange/Amber
+                badge_bg = (0, 165, 255)
                 badge_fg = (255, 255, 255)
             elif tr.state == "COOLDOWN":
                 badge_bg = (100, 100, 100)
@@ -565,7 +740,6 @@ class DrumEngine:
                 badge_bg = (40, 40, 48)
                 badge_fg = (220, 220, 220)
 
-            # Draw small floating pill
             (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
             box_x = px + 12
             box_y = py - 8
@@ -594,7 +768,7 @@ class DrumEngine:
                 cv2.LINE_AA,
             )
 
-            # Draw downward velocity vector arrow if striking
+            # Downward motion vector arrow
             if v > 0.3:
                 arrow_len = min(60, int(v * 20))
                 cv2.arrowedLine(
@@ -613,13 +787,13 @@ class DrumEngine:
         h: int,
         current_time: float,
     ) -> None:
-        """Render velocity tuning meters panel in the top-right corner."""
-        panel_w = 330
-        panel_h = 185
-        panel_x = w - panel_w - 15
+        """Render master clock metronome, BPM mode, and velocity meter HUD."""
+        panel_w = 340
+        panel_h = 220
+        panel_x = w - panel_w - 28
         panel_y = 60
 
-        # Semi-transparent dark background
+        # Background panel
         overlay = frame.copy()
         cv2.rectangle(
             overlay,
@@ -637,55 +811,104 @@ class DrumEngine:
         )
         cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
 
-        # Panel Title
+        # Clock Visual State
+        clock_state = (
+            self.clock.get_visual_state()
+            if self.clock
+            else {"bpm": self.bpm, "beat_index": 0, "is_flash": False, "click_enabled": True}
+        )
+
+        # Row 1: Header & BPM Display
+        bpm_str = f"BPM: {clock_state['bpm']}"
         cv2.putText(
             frame,
-            "AIRBEAT DRUM & AUDIO ENGINE",
+            "MASTER CLOCK",
             (panel_x + 12, panel_y + 22),
             cv2.FONT_HERSHEY_DUPLEX,
-            0.48,
+            0.46,
             COLOR_SECONDARY,
             1,
             cv2.LINE_AA,
         )
-
-        # Mapping mode badge
-        mode_desc = "FINGER (Idx=Kick, Mid=Snare)" if self.mapping_mode == "finger" else "ZONES (L=Kick, M=Snare, R=Hat)"
         cv2.putText(
             frame,
-            f"Mode: {mode_desc}",
-            (panel_x + 12, panel_y + 38),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.38,
+            bpm_str,
+            (panel_x + 140, panel_y + 23),
+            cv2.FONT_HERSHEY_DUPLEX,
+            0.55,
             (0, 255, 200),
             1,
             cv2.LINE_AA,
         )
 
-        # Config stats line
-        config_info = (
-            f"Thresh: {self.velocity_threshold:.1f} | "
-            f"Cool: {int(self.cooldown_ms)}ms | "
-            f"BPM: {self.bpm} | [M]ode"
-        )
+        # 4-Beat LED visual metronome: [ ● ○ ○ ○ ]
+        beat_idx = clock_state["beat_index"]
+        is_flash = clock_state["is_flash"]
+        led_start_x = panel_x + 240
+        for b in range(4):
+            led_x = led_start_x + b * 22
+            led_y = panel_y + 18
+            if b == beat_idx:
+                led_c = (0, 255, 255) if is_flash else (0, 200, 140)
+                cv2.circle(frame, (led_x, led_y), 6, led_c, -1, cv2.LINE_AA)
+                cv2.circle(frame, (led_x, led_y), 7, (255, 255, 255), 1, cv2.LINE_AA)
+            else:
+                cv2.circle(frame, (led_x, led_y), 4, (60, 60, 75), -1, cv2.LINE_AA)
+
+        # Row 2: BPM Mode & Quantize Info
+        if self.bpm_mode == "tap":
+            n_taps = len(self._tap_intervals)
+            bpm_mode_str = f"BPM Mode: TAP ({n_taps}/4 avg) [B]"
+        else:
+            bpm_mode_str = f"BPM Mode: HEIGHT (Tgt:{int(self.target_height_bpm)}) [B]"
+
         cv2.putText(
             frame,
-            config_info,
-            (panel_x + 12, panel_y + 54),
+            bpm_mode_str,
+            (panel_x + 12, panel_y + 40),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.36,
-            COLOR_TEXT_MUTED,
+            (255, 200, 100),
             1,
             cv2.LINE_AA,
         )
 
-        # Render meter for each finger
+        q_info = f"Quant: {self.quantize_mode.upper()} [G] | Click: {'ON' if clock_state['click_enabled'] else 'OFF'} [C]"
+        cv2.putText(
+            frame,
+            q_info,
+            (panel_x + 12, panel_y + 56),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.36,
+            (180, 180, 220),
+            1,
+            cv2.LINE_AA,
+        )
+
+        # Row 3: Mapping Mode
+        mode_desc = (
+            "FINGER (Idx=Kick, Mid=Snare)"
+            if self.mapping_mode == "finger"
+            else "ZONES (L=Kick, M=Snare, R=Hat)"
+        )
+        cv2.putText(
+            frame,
+            f"Drum Map: {mode_desc} [M]",
+            (panel_x + 12, panel_y + 72),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.35,
+            (0, 255, 180),
+            1,
+            cv2.LINE_AA,
+        )
+
+        # Row 4: Finger Meters
         self._render_finger_meter(
             frame,
             tracker=self.index_tracker,
             display_name="INDEX (tip #8)",
             x=panel_x + 12,
-            y=panel_y + 66,
+            y=panel_y + 88,
             bar_w=panel_w - 24,
             current_time=current_time,
         )
@@ -695,7 +918,7 @@ class DrumEngine:
             tracker=self.middle_tracker,
             display_name="MIDDLE (tip #12)",
             x=panel_x + 12,
-            y=panel_y + 124,
+            y=panel_y + 148,
             bar_w=panel_w - 24,
             current_time=current_time,
         )
@@ -714,11 +937,11 @@ class DrumEngine:
         bar_h = 12
         max_meter_v = max(3.5, self.velocity_threshold * 2.0)
 
-        # Target drum sound
-        target_drum = self.audio.resolve_drum(tracker.name, tracker.current_norm_x, self.mapping_mode)
+        target_drum = self.audio.resolve_drum(
+            tracker.name, tracker.current_norm_x, self.mapping_mode
+        )
         dyn_vol = int(self.audio.velocity_to_volume(tracker.velocity) * 100)
 
-        # Name, drum, and velocity reading
         sign = "+" if tracker.velocity >= 0 else ""
         vel_text = f"{display_name} -> {target_drum.upper()}: {sign}{tracker.velocity:.2f} ({dyn_vol}%)"
         cv2.putText(
@@ -736,12 +959,16 @@ class DrumEngine:
         state_label = tracker.state
         if tracker.state == "COOLDOWN":
             remaining_ms = int(
-                max(0.0, tracker.cooldown_ms - (current_time - tracker.last_hit_time) * 1000.0)
+                max(
+                    0.0,
+                    tracker.cooldown_ms
+                    - (current_time - tracker.last_hit_time) * 1000.0,
+                )
             )
             state_label = f"COOL ({remaining_ms}ms)"
             badge_color = (110, 110, 110)
         elif tracker.state == "ARMED":
-            badge_color = (0, 180, 255)  # Orange
+            badge_color = (0, 180, 255)
         elif tracker.velocity >= self.velocity_threshold:
             badge_color = COLOR_SUCCESS
         else:
@@ -802,7 +1029,7 @@ class DrumEngine:
             frame,
             (thresh_x, bar_y - 3),
             (thresh_x, bar_y + bar_h + 3),
-            (0, 0, 255),  # Red threshold marker line
+            (0, 0, 255),
             2,
             cv2.LINE_AA,
         )
@@ -816,15 +1043,22 @@ class DrumEngine:
             1,
         )
 
+    def cleanup(self) -> None:
+        """Stop metronome clock thread and cleanup audio resources."""
+        if self.clock:
+            self.clock.stop()
+        if self.audio:
+            self.audio.cleanup()
+
 
 def run_drum_engine_test(
     camera_index: int = 0,
     max_frames: Optional[int] = None,
 ) -> None:
-    """Standalone live test runner for drum engine hit detection, audio synthesis, and tuning."""
+    """Standalone live test runner for drum engine, metronome clock, and BPM modes."""
     from hand_tracker import HandTracker
 
-    print("[AirBeat] Initializing Drum Engine live test...")
+    print("[AirBeat] Initializing Drum Engine with Metronome Clock...")
     tracker = HandTracker(mirrored=True, use_one_euro_filter=True)
     if not tracker.initialize():
         print("❌ [AirBeat] Failed to initialize HandTracker.")
@@ -835,7 +1069,10 @@ def run_drum_engine_test(
         print("❌ [AirBeat] Failed to initialize AudioManager.")
         return
 
-    drum_engine = DrumEngine(audio_manager=audio_manager)
+    clock = MetronomeClock(bpm=DEFAULT_BPM, quantize_mode=QUANTIZE_MODE)
+    clock.start()
+
+    drum_engine = DrumEngine(audio_manager=audio_manager, clock=clock)
 
     cap = None
     if hasattr(cv2, "CAP_AVFOUNDATION"):
@@ -845,22 +1082,28 @@ def run_drum_engine_test(
 
     if not cap.isOpened():
         print(f"❌ [AirBeat] Could not open camera at index {camera_index}.")
+        clock.stop()
         return
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-    window_name = "AirBeat - Drum Engine & Audio Playback"
+    window_name = "AirBeat - Drum Engine, Metronome & BPM Controls"
     window_supported = True
     frame_count = 0
 
     print("=" * 60)
-    print("🥁 AirBeat Drum Engine & Audio Live")
-    print(f"   Mapping Mode:       {drum_engine.mapping_mode.upper()} (press 'm' in window to toggle)")
-    print(f"   Velocity Threshold: {drum_engine.velocity_threshold:.2f} norm/s")
-    print(f"   Cooldown:           {drum_engine.cooldown_ms:.0f} ms")
-    print("   Strike downward with Right Hand Index or Middle finger to play drums!")
-    print("   Press 'q' or ESC in window to exit.")
+    print("🥁 AirBeat Drum Engine & Master Clock Live")
+    print(f"   BPM:                {drum_engine.bpm}")
+    print(f"   BPM Control Mode:   {drum_engine.bpm_mode.upper()} ('b' to toggle)")
+    print(f"   Mapping Mode:       {drum_engine.mapping_mode.upper()} ('m' to toggle)")
+    print(f"   Quantize:           {drum_engine.quantize_mode.upper()} ('g' to toggle)")
+    print("   Hotkeys:")
+    print("   [B] Toggle BPM mode (Tap Tempo <-> Hand Height)")
+    print("   [M] Toggle Drum Mapping (Finger <-> Horizontal Zones)")
+    print("   [G] Toggle Quantization (None -> 1/8 -> 1/16)")
+    print("   [C] Toggle Metronome Click track")
+    print("   [Q/ESC] Quit")
     print("=" * 60 + "\n")
 
     try:
@@ -884,7 +1127,7 @@ def run_drum_engine_test(
                 frame, left_hand, right_hand, show_fps=True, show_hud=True
             )
 
-            # Draw drum tuning overlay (meters, zones, fingertip tags, flash)
+            # Draw drum tuning overlay (meters, zones, metronome HUD, flash)
             frame = drum_engine.draw_debug_overlay(
                 frame, right_hand, current_time=now
             )
@@ -896,8 +1139,13 @@ def run_drum_engine_test(
                     if key in (27, ord("q")):
                         break
                     elif key in (ord("m"), ord("M")):
-                        # Toggle mapping mode
-                        new_m = drum_engine.toggle_mapping_mode()
+                        drum_engine.toggle_mapping_mode()
+                    elif key in (ord("b"), ord("B")):
+                        drum_engine.toggle_bpm_mode()
+                    elif key in (ord("g"), ord("G")):
+                        drum_engine.toggle_quantize_mode()
+                    elif key in (ord("c"), ord("C")):
+                        drum_engine.toggle_metronome_click()
                 except cv2.error as e:
                     print(f"[AirBeat] Window display unavailable: {e}")
                     window_supported = False
@@ -913,16 +1161,20 @@ def run_drum_engine_test(
             except Exception:
                 pass
         tracker.release()
-        audio_manager.cleanup()
+        drum_engine.cleanup()
         print(f"\n✅ [AirBeat] Drum test completed ({frame_count} frames processed).")
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="AirBeat Drum Engine Live Tuning")
-    parser.add_argument("--camera-index", type=int, default=0, help="Camera index (default 0)")
-    parser.add_argument("--test-frames", type=int, default=None, help="Stop after N frames")
+    parser = argparse.ArgumentParser(description="AirBeat Drum Engine & Metronome Live")
+    parser.add_argument(
+        "--camera-index", type=int, default=0, help="Camera index (default 0)"
+    )
+    parser.add_argument(
+        "--test-frames", type=int, default=None, help="Stop after N frames"
+    )
     args = parser.parse_args()
 
     run_drum_engine_test(camera_index=args.camera_index, max_frames=args.test_frames)

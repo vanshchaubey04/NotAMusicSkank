@@ -68,3 +68,26 @@ DRUM_ZONE_BOUNDARIES = (0.60, 0.80)  # (left_cutoff, right_cutoff) in normalized
 DRUM_MIN_VOLUME = 0.35            # Minimum volume at trigger threshold
 DRUM_MAX_VOLUME = 1.0             # Maximum volume for hard strikes
 DRUM_MAX_VELOCITY = 3.2           # Velocity saturation point for max volume
+
+# Metronome / Master Clock Settings
+METRONOME_ENABLED = True
+METRONOME_CLICK_ENABLED = True    # Audible metronome woodblock/click
+METRONOME_CLICK_VOLUME = 0.45     # Click volume (0.0 to 1.0)
+
+# BPM Control Modes (Right Hand)
+# "tap":    Tap tempo calculated from the average of the last 4 intervals between hits
+# "height": Right hand height mapped to BPM 60-180 with exponential smoothing
+BPM_CONTROL_MODE = "tap"
+BPM_MIN = 60
+BPM_MAX = 180
+BPM_TAP_HISTORY_COUNT = 4         # Average of last 4 hit intervals
+BPM_HEIGHT_MIN_Y = 0.20           # Normalized Y for BPM 180 (higher hand)
+BPM_HEIGHT_MAX_Y = 0.80           # Normalized Y for BPM 60 (lower hand)
+BPM_HEIGHT_SMOOTHING = 0.08       # Smoothing factor for height-based tempo (0.01 to 0.2)
+
+# Hit Quantization Settings
+# "none": Immediate hit playback with zero delay
+# "1/8":  Quantize hits to the nearest 1/8 note grid
+# "1/16": Quantize hits to the nearest 1/16 note grid
+QUANTIZE_MODE = "none"
+
