@@ -102,13 +102,13 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
         print_macos_camera_troubleshooting()
         return False
 
-    gui = OverlayGUI()
     tracker = HandTracker(mirrored=MIRROR_CAMERA, use_one_euro_filter=True)
     tracker.initialize()
     audio = AudioManager()
     audio.initialize()
     drum_engine = DrumEngine(audio_manager=audio)
     music_engine = MusicEngine(bpm=drum_engine.bpm)
+    gui = OverlayGUI(music_engine=music_engine)
 
     window_name = "AirBeat - Camera Test"
     window_supported = True
@@ -135,6 +135,9 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
 
             # Process hand landmarks (left and right hands separated, 1€ smoothed)
             left_hand, right_hand = tracker.process_frame(frame, timestamp=now)
+
+            # Process left hand GUI gestures (cursor, pinch-to-click, dwell-to-select)
+            gui.process_left_hand(left_hand, music_engine=music_engine, timestamp=now)
 
             # Process drum hit detection on right hand and trigger sounds
             hits = drum_engine.process_right_hand(right_hand, timestamp=now)

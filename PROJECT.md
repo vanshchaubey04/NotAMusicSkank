@@ -58,10 +58,13 @@ NotAMusicSoftware/
   * Plays looping backing tracks synchronized to the selected key and BPM.
 
 * **`gui.py`**:
-  * Renders visual feedback directly onto OpenCV frames.
-  * Left-hand selection dial/menu with hover/pinch activation.
-  * Right-hand visual drum pads with hit animation feedback.
-  * Status banner displaying current Key, Scale, Backing Track, and BPM.
+  * Real-time full-screen OpenCV HUD overlay.
+  * Left-hand index fingertip cursor navigation.
+  * Pinch-to-click with hysteresis (enter: 0.052, exit: 0.076) and dwell-to-select fallback (hold 1.0s).
+  * Winding circular progress ring for dwell countdown.
+  * Interactive glassmorphic buttons for Backing Track Start/Stop, Key Selector, Scale Selector, and Style Selector.
+  * Status header showing Key, Scale, Backing Style, BPM, and Camera health.
+  * Strict spatial and logic isolation between left-hand GUI navigation and right-hand air drumming.
 
 * **`main.py`**:
   * Initializes the video stream with macOS `AVFoundation` backend support.
