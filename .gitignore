@@ -19,3 +19,6 @@ dist/
 # IDE configs
 .vscode/
 .idea/
+
+# Audio session recordings
+recordings/*.wav

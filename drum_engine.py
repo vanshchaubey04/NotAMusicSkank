@@ -16,6 +16,8 @@ Detects air drumming hits from the right hand's index and middle fingertips:
 
 from collections import deque
 from dataclasses import dataclass
+import math
+import random
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -24,6 +26,7 @@ import numpy as np
 
 from audio import AudioManager
 from config import (
+    AR_PADS_ENABLED,
     BPM_CONTROL_MODE,
     BPM_HEIGHT_MAX_Y,
     BPM_HEIGHT_MIN_Y,
@@ -39,21 +42,27 @@ from config import (
     COLOR_TEXT,
     COLOR_TEXT_MUTED,
     DEFAULT_BPM,
+    DEFAULT_DRUM_KIT,
+    DEFAULT_SENSITIVITY,
     DRUM_COOLDOWN_MS,
     DRUM_DECEL_RATIO,
     DRUM_FLASH_DURATION_MS,
+    DRUM_KITS,
     DRUM_MAPPING_MODE,
     DRUM_MAX_ARMED_DURATION_MS,
+    DRUM_PINKY_VELOCITY_THRESHOLD,
+    DRUM_RING_VELOCITY_THRESHOLD,
     DRUM_SOUNDS,
     DRUM_THUMB_VELOCITY_THRESHOLD,
-    DRUM_RING_VELOCITY_THRESHOLD,
-    DRUM_PINKY_VELOCITY_THRESHOLD,
     DRUM_VELOCITY_SMOOTHING,
     DRUM_VELOCITY_THRESHOLD,
     DRUM_ZONE_BOUNDARIES,
+    LEFT_HAND_DRUM_MAP,
     METRONOME_CLICK_ENABLED,
     METRONOME_CLICK_VOLUME,
     QUANTIZE_MODE,
+    SENSITIVITY_PRESETS,
+    TWO_HAND_DRUMS_ENABLED,
 )
 from metronome import MetronomeClock
 
@@ -377,6 +386,124 @@ class DrumEngine:
             self.pinky_tracker,
         ]
 
+        # Two-Handed Drumming trackers (Left Hand: green/cyan dual strike)
+        self.two_hand_drums_enabled: bool = TWO_HAND_DRUMS_ENABLED
+        self.left_thumb_tracker = FingerStrikeTracker(
+            name="thumb",
+            landmark_idx=THUMB_TIP_IDX,
+            base_landmark_idx=THUMB_BASE_IDX,
+            velocity_threshold=DRUM_THUMB_VELOCITY_THRESHOLD,
+            cooldown_ms=self.cooldown_ms,
+            smoothing=self.velocity_smoothing,
+            decel_ratio=self.decel_ratio,
+        )
+        self.left_index_tracker = FingerStrikeTracker(
+            name="index",
+            landmark_idx=INDEX_TIP_IDX,
+            base_landmark_idx=INDEX_BASE_IDX,
+            velocity_threshold=self.velocity_threshold,
+            cooldown_ms=self.cooldown_ms,
+            smoothing=self.velocity_smoothing,
+            decel_ratio=self.decel_ratio,
+        )
+        self.left_middle_tracker = FingerStrikeTracker(
+            name="middle",
+            landmark_idx=MIDDLE_TIP_IDX,
+            base_landmark_idx=MIDDLE_BASE_IDX,
+            velocity_threshold=self.velocity_threshold,
+            cooldown_ms=self.cooldown_ms,
+            smoothing=self.velocity_smoothing,
+            decel_ratio=self.decel_ratio,
+        )
+        self.left_ring_tracker = FingerStrikeTracker(
+            name="ring",
+            landmark_idx=RING_TIP_IDX,
+            base_landmark_idx=RING_BASE_IDX,
+            velocity_threshold=DRUM_RING_VELOCITY_THRESHOLD,
+            cooldown_ms=self.cooldown_ms,
+            smoothing=self.velocity_smoothing,
+            decel_ratio=self.decel_ratio,
+        )
+        self.left_pinky_tracker = FingerStrikeTracker(
+            name="pinky",
+            landmark_idx=PINKY_TIP_IDX,
+            base_landmark_idx=PINKY_BASE_IDX,
+            velocity_threshold=DRUM_PINKY_VELOCITY_THRESHOLD,
+            cooldown_ms=self.cooldown_ms,
+            smoothing=self.velocity_smoothing,
+            decel_ratio=self.decel_ratio,
+        )
+        self.left_finger_trackers = [
+            self.left_thumb_tracker,
+            self.left_index_tracker,
+            self.left_middle_tracker,
+            self.left_ring_tracker,
+            self.left_pinky_tracker,
+        ]
+
+        # Sensitivity Presets: apply default preset
+        self.sensitivity_preset: str = DEFAULT_SENSITIVITY
+        self.set_sensitivity_preset(self.sensitivity_preset)
+
+        # Holographic AR Drum Pads (5 pads in semi-circular ergonomic arc)
+        self.ar_pads_enabled: bool = AR_PADS_ENABLED
+        self.ar_pads: Dict[str, Dict[str, Any]] = {
+            "kick": {
+                "display": "KICK",
+                "finger": "THB",
+                "norm_pos": (0.42, 0.77),
+                "radius": 46,
+                "color": (255, 140, 0),    # Cyan/Blue
+                "hit_glow": 0.0,
+                "compression": 0.0,
+            },
+            "snare": {
+                "display": "SNARE",
+                "finger": "IDX",
+                "norm_pos": (0.54, 0.73),
+                "radius": 44,
+                "color": (80, 240, 120),   # Emerald green
+                "hit_glow": 0.0,
+                "compression": 0.0,
+            },
+            "hihat": {
+                "display": "HI-HAT",
+                "finger": "MID",
+                "norm_pos": (0.66, 0.68),
+                "radius": 42,
+                "color": (0, 240, 255),    # Golden yellow
+                "hit_glow": 0.0,
+                "compression": 0.0,
+            },
+            "tom": {
+                "display": "TOM",
+                "finger": "RNG",
+                "norm_pos": (0.78, 0.70),
+                "radius": 44,
+                "color": (0, 160, 255),    # Vibrant Amber
+                "hit_glow": 0.0,
+                "compression": 0.0,
+            },
+            "crash": {
+                "display": "CRASH",
+                "finger": "PNK",
+                "norm_pos": (0.89, 0.64),
+                "radius": 44,
+                "color": (220, 40, 255),   # Magenta
+                "hit_glow": 0.0,
+                "compression": 0.0,
+            },
+        }
+
+        # Particle and shockwave visual FX
+        self.shockwaves: List[Dict[str, Any]] = []
+        self.neon_particles: List[Dict[str, Any]] = []
+
+        # Subsystem references for live looper, jam recorder, and rhythm hero game
+        self.looper: Optional[Any] = None
+        self.jam_recorder: Optional[Any] = None
+        self.rhythm_game: Optional[Any] = None
+
         # Optional listener hook for live demo/tutorial feedback
         self.on_hit_callback: Optional[Callable[[HitEvent], None]] = None
 
@@ -436,6 +563,114 @@ class DrumEngine:
             print(f"[DrumEngine] Metronome click: {'ON' if state else 'OFF'}")
             return state
         return False
+
+    def set_sensitivity_preset(self, preset_name: str) -> str:
+        """Apply strike velocity sensitivity preset across right and left hand trackers."""
+        if preset_name not in SENSITIVITY_PRESETS:
+            return self.sensitivity_preset
+
+        preset = SENSITIVITY_PRESETS[preset_name]
+        self.sensitivity_preset = preset_name
+
+        # Update right-hand finger trackers
+        self.thumb_tracker.velocity_threshold = preset["thumb"]
+        self.index_tracker.velocity_threshold = preset["index"]
+        self.middle_tracker.velocity_threshold = preset["middle"]
+        self.ring_tracker.velocity_threshold = preset["ring"]
+        self.pinky_tracker.velocity_threshold = preset["pinky"]
+
+        # Update left-hand finger trackers
+        if hasattr(self, "left_thumb_tracker"):
+            self.left_thumb_tracker.velocity_threshold = preset["thumb"]
+            self.left_index_tracker.velocity_threshold = preset["index"]
+            self.left_middle_tracker.velocity_threshold = preset["middle"]
+            self.left_ring_tracker.velocity_threshold = preset["ring"]
+            self.left_pinky_tracker.velocity_threshold = preset["pinky"]
+
+        print(
+            f"[DrumEngine] Sensitivity preset set to: {preset_name.upper()} "
+            f"(Index={preset['index']}, Thumb={preset['thumb']})"
+        )
+        return self.sensitivity_preset
+
+    def cycle_sensitivity(self) -> str:
+        """Cycle sensitivity preset: High -> Ultra -> Normal -> High."""
+        order = ["High", "Ultra", "Normal"]
+        idx = order.index(self.sensitivity_preset) if self.sensitivity_preset in order else 0
+        new_preset = order[(idx + 1) % len(order)]
+        return self.set_sensitivity_preset(new_preset)
+
+    def toggle_ar_pads(self) -> bool:
+        """Toggle holographic AR drum pads on/off."""
+        self.ar_pads_enabled = not self.ar_pads_enabled
+        print(f"[DrumEngine] AR Drum Pads: {'ENABLED' if self.ar_pads_enabled else 'DISABLED'}")
+        return self.ar_pads_enabled
+
+    def toggle_two_hand_drums(self) -> bool:
+        """Toggle two-handed drumming capability on/off."""
+        self.two_hand_drums_enabled = not self.two_hand_drums_enabled
+        print(f"[DrumEngine] Two-Handed Drumming: {'ENABLED' if self.two_hand_drums_enabled else 'DISABLED'}")
+        return self.two_hand_drums_enabled
+
+    def process_left_hand_drums(
+        self,
+        left_hand_data: Optional[Any],
+        timestamp: Optional[float] = None,
+    ) -> List[HitEvent]:
+        """Process left hand landmarks for two-handed drumming when outside GUI menu.
+
+        Args:
+            left_hand_data: HandData instance from HandTracker (or None).
+            timestamp: Frame timestamp (defaults to time.time()).
+
+        Returns:
+            List of HitEvent objects detected from left hand.
+        """
+        if timestamp is None:
+            timestamp = time.time()
+
+        if not self.two_hand_drums_enabled or left_hand_data is None:
+            for tr in self.left_finger_trackers:
+                tr.reset()
+            return []
+
+        # If left hand is inside the GUI menu zone (norm_x < 0.24 or pixel_x < 290),
+        # reserve it exclusively for GUI navigation and disable drumming strikes
+        wrist_norm_x = float(left_hand_data.landmarks[0, 0])
+        idx_px_x = float(left_hand_data.pixel_landmarks[8, 0])
+        if wrist_norm_x < 0.24 or idx_px_x < 290:
+            for tr in self.left_finger_trackers:
+                tr.reset()
+            return []
+
+        landmarks = left_hand_data.landmarks
+        pixel_landmarks = left_hand_data.pixel_landmarks
+        hits: List[HitEvent] = []
+
+        for tr in self.left_finger_trackers:
+            idx = tr.landmark_idx
+            base_idx = tr.base_landmark_idx
+            norm_x = float(landmarks[idx, 0])
+            norm_y = float(landmarks[idx, 1])
+            base_norm_y = (
+                float(landmarks[base_idx, 1])
+                if (base_idx is not None and landmarks.shape[0] > base_idx)
+                else None
+            )
+            px = (int(pixel_landmarks[idx, 0]), int(pixel_landmarks[idx, 1]))
+
+            hit = tr.update(norm_x, norm_y, px, timestamp, base_norm_y=base_norm_y)
+            if hit is not None:
+                hit.finger = f"L_{tr.name}"
+                self._handle_hit_trigger(hit)
+                hits.append(hit)
+                if self.on_hit_callback:
+                    try:
+                        self.on_hit_callback(hit)
+                    except Exception as cb_err:
+                        print(f"⚠️ [DrumEngine] Left hit callback error: {cb_err}")
+
+        return hits
 
     def process_right_hand(
         self,
@@ -542,14 +777,19 @@ class DrumEngine:
         self._tap_hit_times.append(timestamp)
 
     def _handle_hit_trigger(self, hit: HitEvent) -> None:
-        """Process hit event: resolve drum, scale volume, quantize/play, and flash."""
-        drum_name = self.audio.resolve_drum(hit.finger, hit.norm_x, self.mapping_mode)
+        """Process hit event: resolve drum, scale volume, quantize/play, record, and flash."""
+        if hit.finger.startswith("L_"):
+            clean_finger = hit.finger[2:]
+            drum_name = LEFT_HAND_DRUM_MAP.get(clean_finger, "snare")
+        else:
+            drum_name = self.audio.resolve_drum(hit.finger, hit.norm_x, self.mapping_mode)
+
         volume = self.audio.velocity_to_volume(hit.velocity)
         hit.drum = drum_name
         hit.volume = volume
 
         # BPM Control Mode (a): Tap tempo interval calculation
-        if self.bpm_mode == "tap":
+        if self.bpm_mode == "tap" and not hit.finger.startswith("L_"):
             self._update_bpm_from_tap(hit.timestamp)
 
         # Trigger or quantize hit playback
@@ -566,6 +806,19 @@ class DrumEngine:
 
         hit.quantized = not is_immediate
 
+        # Looper recording hook
+        if self.looper is not None and self.clock is not None:
+            current_beat = self.clock.get_continuous_beat()
+            self.looper.record_hit(drum_name, volume, current_beat)
+
+        # Jam session recorder hook
+        if self.jam_recorder is not None:
+            self.jam_recorder.log_hit(drum_name, volume, hit.timestamp)
+
+        # Rhythm Hero game scoring hook
+        if self.rhythm_game is not None and getattr(self.rhythm_game, "is_active", False):
+            self.rhythm_game.check_hit(drum_name, hit.timestamp)
+
         # Console logging
         q_tag = ""
         if not is_immediate:
@@ -576,6 +829,17 @@ class DrumEngine:
         )
 
         self._register_flash(hit)
+
+        # Holographic AR drum pad excitation and particle explosion
+        if self.ar_pads_enabled and drum_name in self.ar_pads:
+            pad = self.ar_pads[drum_name]
+            pad["hit_glow"] = 1.0
+            pad["compression"] = 1.0
+            px, py = hit.pixel_pos
+            pad_px = (int(pad["norm_pos"][0] * 1280), int(pad["norm_pos"][1] * 720))
+            eff_px = (px, py) if (px > 0 and py > 0) else pad_px
+            self._emit_shockwave(eff_px, pad["color"])
+            self._emit_neon_particles(eff_px, pad["color"], count=15)
 
     def _register_flash(self, hit: HitEvent) -> None:
         """Register a visual screen flash event."""
@@ -591,13 +855,159 @@ class DrumEngine:
             }
         )
 
+    def _emit_shockwave(self, center_px: Tuple[int, int], color: Tuple[int, int, int]) -> None:
+        """Spawn an expanding shockwave ripple effect."""
+        self.shockwaves.append(
+            {
+                "center": center_px,
+                "color": color,
+                "start_time": time.time(),
+                "duration": 0.45,
+                "max_radius": 95,
+            }
+        )
+
+    def _emit_neon_particles(
+        self, center_px: Tuple[int, int], color: Tuple[int, int, int], count: int = 15
+    ) -> None:
+        """Spawn radiant spark particles exploding outward on drum strike."""
+        now = time.time()
+        cx, cy = center_px
+        for _ in range(count):
+            angle = random.uniform(0, 2.0 * math.pi)
+            speed = random.uniform(70.0, 250.0)
+            vx = speed * math.cos(angle)
+            vy = speed * math.sin(angle)
+            life = random.uniform(0.35, 0.70)
+            size = random.randint(2, 4)
+            self.neon_particles.append(
+                {
+                    "x": float(cx),
+                    "y": float(cy),
+                    "vx": vx,
+                    "vy": vy,
+                    "color": color,
+                    "size": size,
+                    "start_time": now,
+                    "duration": life,
+                }
+            )
+
+    def _render_shockwaves(self, frame: np.ndarray, current_time: float) -> None:
+        """Draw expanding circular shockwaves."""
+        active = []
+        for sw in self.shockwaves:
+            elapsed = current_time - sw["start_time"]
+            if elapsed < sw["duration"]:
+                active.append(sw)
+                progress = elapsed / sw["duration"]
+                alpha = max(0.0, 1.0 - progress)
+                radius = int(14 + progress * sw["max_radius"])
+                c = sw["color"]
+                draw_color = (int(c[0] * alpha), int(c[1] * alpha), int(c[2] * alpha))
+                cv2.circle(frame, sw["center"], radius, draw_color, max(1, int(3 * alpha)), cv2.LINE_AA)
+        self.shockwaves = active
+
+    def _render_neon_particles(self, frame: np.ndarray, current_time: float) -> None:
+        """Draw radiating neon spark particles with gentle gravity."""
+        active = []
+        h, w = frame.shape[:2]
+        for p in self.neon_particles:
+            elapsed = current_time - p["start_time"]
+            if elapsed < p["duration"]:
+                active.append(p)
+                progress = elapsed / p["duration"]
+                alpha = max(0.0, 1.0 - progress)
+                cur_x = int(p["x"] + p["vx"] * elapsed)
+                cur_y = int(p["y"] + p["vy"] * elapsed + 60.0 * elapsed * elapsed)
+                if 0 <= cur_x < w and 0 <= cur_y < h:
+                    c = p["color"]
+                    draw_c = (int(c[0] * alpha), int(c[1] * alpha), int(c[2] * alpha))
+                    cv2.circle(frame, (cur_x, cur_y), p["size"], draw_c, -1, cv2.LINE_AA)
+        self.neon_particles = active
+
+    def _render_ar_drum_pads(self, frame: np.ndarray, current_time: float) -> None:
+        """Render floating holographic sci-fi drum pads in camera space."""
+        h, w = frame.shape[:2]
+
+        for drum_name, pad in self.ar_pads.items():
+            # Update decay
+            if pad["hit_glow"] > 0:
+                pad["hit_glow"] = max(0.0, pad["hit_glow"] - 0.05)
+            if pad["compression"] > 0:
+                pad["compression"] = max(0.0, pad["compression"] - 0.06)
+
+            nx, ny = pad["norm_pos"]
+            cx = int(nx * w)
+            cy = int(ny * h)
+            base_r = pad["radius"]
+            # Dynamic bounce compression on impact
+            r = int(base_r * (1.0 - 0.18 * pad["compression"]))
+
+            base_color = pad["color"]
+            glow = pad["hit_glow"]
+
+            # Holographic glassmorphic fill
+            overlay = frame.copy()
+            fill_alpha = 0.20 + 0.45 * glow
+            fill_color = tuple(min(255, int(c * (0.6 + 0.4 * glow))) for c in base_color)
+            cv2.circle(overlay, (cx, cy), r, fill_color, -1, cv2.LINE_AA)
+            cv2.addWeighted(overlay, fill_alpha, frame, 1.0 - fill_alpha, 0, frame)
+
+            # Outer glow and border rings
+            border_thick = 2 if glow < 0.3 else 3
+            border_color = (255, 255, 255) if glow > 0.6 else base_color
+            cv2.circle(frame, (cx, cy), r, border_color, border_thick, cv2.LINE_AA)
+            cv2.circle(
+                frame,
+                (cx, cy),
+                max(2, r - 6),
+                (border_color[0] // 2, border_color[1] // 2, border_color[2] // 2),
+                1,
+                cv2.LINE_AA,
+            )
+
+            # Center target crosshairs
+            cv2.circle(frame, (cx, cy), 4, border_color, -1, cv2.LINE_AA)
+            tick_len = 8
+            cv2.line(frame, (cx - r - 4, cy), (cx - r + tick_len, cy), border_color, 1, cv2.LINE_AA)
+            cv2.line(frame, (cx + r - tick_len, cy), (cx + r + 4, cy), border_color, 1, cv2.LINE_AA)
+            cv2.line(frame, (cx, cy - r - 4), (cx, cy - r + tick_len), border_color, 1, cv2.LINE_AA)
+            cv2.line(frame, (cx, cy + r - tick_len), (cx, cy + r + 4), border_color, 1, cv2.LINE_AA)
+
+            # Instrument label: e.g. "KICK" and finger tag "[THB]"
+            name_text = pad["display"]
+            (tw, th), _ = cv2.getTextSize(name_text, cv2.FONT_HERSHEY_DUPLEX, 0.45, 1)
+            cv2.putText(
+                frame,
+                name_text,
+                (cx - tw // 2, cy + 4),
+                cv2.FONT_HERSHEY_DUPLEX,
+                0.45,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+            finger_text = f"[{pad['finger']}]"
+            (fw, fh), _ = cv2.getTextSize(finger_text, cv2.FONT_HERSHEY_SIMPLEX, 0.33, 1)
+            cv2.putText(
+                frame,
+                finger_text,
+                (cx - fw // 2, cy + 18),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.33,
+                (200, 220, 255),
+                1,
+                cv2.LINE_AA,
+            )
+
     def draw_debug_overlay(
         self,
         frame: np.ndarray,
         right_hand_data: Optional[Any],
         current_time: Optional[float] = None,
     ) -> np.ndarray:
-        """Render live velocity meters, metronome beat HUD, zones, and screen flash effects."""
+        """Render live velocity meters, metronome beat HUD, zones, AR pads, and screen flash effects."""
         if current_time is None:
             current_time = time.time()
 
@@ -607,18 +1017,24 @@ class DrumEngine:
         if self.mapping_mode == "zones":
             self._render_horizontal_zones(frame, w, h, right_hand_data)
 
-        # 2. Render Height Gauge if in "height" BPM mode
+        # 2. Render Holographic AR Drum Pads & Neon Particles/Shockwaves
+        if self.ar_pads_enabled:
+            self._render_ar_drum_pads(frame, current_time)
+        self._render_shockwaves(frame, current_time)
+        self._render_neon_particles(frame, current_time)
+
+        # 3. Render Height Gauge if in "height" BPM mode
         if self.bpm_mode == "height":
             self._render_height_bpm_gauge(frame, w, h)
 
-        # 3. Render Screen Flash Effect if any hits are active
+        # 4. Render Screen Flash Effect if any hits are active
         frame = self._render_screen_flashes(frame, current_time)
 
-        # 4. Render Live Fingertip Velocity Indicators on Hand
+        # 5. Render Live Fingertip Velocity Indicators on Hand
         if right_hand_data is not None:
             self._render_fingertip_indicators(frame)
 
-        # 5. Render Master Clock & Drum Tuning HUD Panel
+        # 6. Render Master Clock & Drum Tuning HUD Panel
         self._render_tuning_hud(frame, w, h, current_time)
 
         return frame
@@ -874,7 +1290,7 @@ class DrumEngine:
     ) -> None:
         """Render master clock metronome, BPM mode, and 5-finger velocity meter HUD."""
         panel_w = 340
-        panel_h = 265
+        panel_h = 286
         panel_x = w - panel_w - 28
         panel_y = 60
 
@@ -987,7 +1403,24 @@ class DrumEngine:
             cv2.LINE_AA,
         )
 
-        # Row 4: All 5 Finger Velocity Meters (Thumb, Index, Middle, Ring, Pinky)
+        # Row 4: Kit, Sensitivity & 2-Hand info
+        two_hand_str = "ON" if self.two_hand_drums_enabled else "OFF"
+        kit_info = (
+            f"Kit: {self.audio.current_kit} [V] | "
+            f"Sens: {self.sensitivity_preset} [E] | 2-Hand: {two_hand_str} [Y]"
+        )
+        cv2.putText(
+            frame,
+            kit_info,
+            (panel_x + 12, panel_y + 81),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.32,
+            (255, 180, 220),
+            1,
+            cv2.LINE_AA,
+        )
+
+        # Row 5: All 5 Finger Velocity Meters (Thumb, Index, Middle, Ring, Pinky)
         finger_displays = [
             ("THUMB  #4", self.thumb_tracker),
             ("INDEX  #8", self.index_tracker),
@@ -996,7 +1429,7 @@ class DrumEngine:
             ("PINKY  #20", self.pinky_tracker),
         ]
 
-        meter_y_start = panel_y + 80
+        meter_y_start = panel_y + 94
         for i, (label_name, tracker) in enumerate(finger_displays):
             self._render_compact_finger_meter(
                 frame,
@@ -1007,6 +1440,7 @@ class DrumEngine:
                 bar_w=panel_w - 24,
                 current_time=current_time,
             )
+
 
     def _render_compact_finger_meter(
         self,

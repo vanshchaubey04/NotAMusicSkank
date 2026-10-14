@@ -99,6 +99,40 @@ BPM_HEIGHT_MIN_Y = 0.20           # Normalized Y for BPM 180 (higher hand)
 BPM_HEIGHT_MAX_Y = 0.80           # Normalized Y for BPM 60 (lower hand)
 BPM_HEIGHT_SMOOTHING = 0.08       # Smoothing factor for height-based tempo (0.01 to 0.2)
 
+# Drum Kits Configuration
+DRUM_KITS = ["808 Trap", "Acoustic Rock", "Cyberpunk", "Lo-Fi Vinyl"]
+DEFAULT_DRUM_KIT = "808 Trap"
+
+# Sensitivity Presets
+SENSITIVITY_PRESETS = {
+    "Ultra": {"thumb": 0.09, "index": 0.12, "middle": 0.12, "ring": 0.11, "pinky": 0.09},
+    "High":  {"thumb": 0.11, "index": 0.14, "middle": 0.14, "ring": 0.13, "pinky": 0.11},
+    "Normal": {"thumb": 0.16, "index": 0.20, "middle": 0.20, "ring": 0.18, "pinky": 0.16},
+}
+DEFAULT_SENSITIVITY = "High"
+
+# Visual Holographic AR Drum Pads & Particle FX
+AR_PADS_ENABLED = True
+
+# Rhythm Game Mode Settings
+RHYTHM_GAME_ENABLED = False
+RHYTHM_PERFECT_WINDOW_SEC = 0.075    # +/- 75ms for PERFECT hit
+RHYTHM_GOOD_WINDOW_SEC = 0.150       # +/- 150ms for GOOD hit
+
+# Two-Handed Drumming (Both hands can strike drums when left hand is outside menu)
+TWO_HAND_DRUMS_ENABLED = True
+LEFT_HAND_DRUM_MAP = {
+    "thumb": "kick",
+    "index": "snare",
+    "middle": "hihat",
+    "ring": "tom",
+    "pinky": "crash",
+}
+
+# Jam Recording & Looper Settings
+RECORDINGS_DIR = "recordings"
+LOOPER_DEFAULT_BARS = 4              # 4 bars (16 beats) loop length
+
 # Hit Quantization Settings
 # "none": Immediate hit playback with zero delay
 # "1/8":  Quantize hits to the nearest 1/8 note grid

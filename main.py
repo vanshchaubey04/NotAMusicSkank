@@ -24,6 +24,8 @@ from hand_tracker import HandTracker
 from drum_engine import DrumEngine
 from audio import AudioManager
 from music_engine import MusicEngine
+from looper import LiveLooper, JamRecorder
+from rhythm_hero import RhythmHeroGame
 
 
 def print_macos_camera_troubleshooting() -> None:
@@ -108,7 +110,33 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
     audio.initialize()
     drum_engine = DrumEngine(audio_manager=audio)
     music_engine = MusicEngine(bpm=drum_engine.bpm)
-    gui = OverlayGUI(music_engine=music_engine)
+    looper = LiveLooper()
+    jam_recorder = JamRecorder()
+    rhythm_hero = RhythmHeroGame()
+
+    # Connect live looper, jam session recorder, and rhythm hero to drum engine
+    drum_engine.looper = looper
+    drum_engine.jam_recorder = jam_recorder
+    drum_engine.rhythm_game = rhythm_hero
+
+    # Wire looper loop playback callback
+    def on_looper_playback(drum_name: str, volume: float) -> None:
+        audio.play_drum(drum_name, volume=volume)
+        if drum_engine.ar_pads_enabled and drum_name in drum_engine.ar_pads:
+            pad = drum_engine.ar_pads[drum_name]
+            pad["hit_glow"] = 0.85
+            pad["compression"] = 0.75
+
+    looper.on_trigger_callback = on_looper_playback
+
+    gui = OverlayGUI(
+        music_engine=music_engine,
+        audio_manager=audio,
+        drum_engine=drum_engine,
+        looper=looper,
+        jam_recorder=jam_recorder,
+        rhythm_hero=rhythm_hero,
+    )
 
     # Wire drum hit callback to interactive tutorial action verification
     drum_engine.on_hit_callback = lambda hit: (
@@ -123,6 +151,8 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
         frame_count = 0
         print("\n[AirBeat] Starting video feed.")
         print("  Controls: [P] Play/Pause Backing | [K] Key | [S] Scale | [T] Style | [M] Drum Map")
+        print("            [V] Drum Kit | [E] Sensitivity | [L] Beat Looper | [R] Jam Recorder")
+        print("            [J] Rhythm Hero Game | [H] AR Drum Pads | [Y] 2-Hand Drums")
         print("            [B] BPM Mode | [G] Quantize | [C] Metronome Click | [D] Tutorial/Demo | [Q/ESC] Quit\n")
 
         while True:
@@ -142,8 +172,21 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
             # Process hand landmarks (left and right hands separated, 1€ smoothed)
             left_hand, right_hand = tracker.process_frame(frame, timestamp=now)
 
+            # Clock synchronization for looper and rhythm hero
+            current_beat = (
+                drum_engine.clock.get_continuous_beat()
+                if drum_engine.clock
+                else 0.0
+            )
+            looper.update_clock(current_beat)
+            if rhythm_hero.is_active:
+                rhythm_hero.update_clock(current_beat=current_beat, bpm=drum_engine.bpm, current_time=now)
+
             # Process left hand GUI gestures (cursor, pinch-to-click, dwell-to-select)
             gui.process_left_hand(left_hand, music_engine=music_engine, timestamp=now)
+
+            # Two-handed drumming: process left hand strikes when outside GUI menu
+            left_hits = drum_engine.process_left_hand_drums(left_hand, timestamp=now)
 
             # Process drum hit detection on right hand and trigger sounds
             hits = drum_engine.process_right_hand(right_hand, timestamp=now)
@@ -156,7 +199,7 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
                 frame, left_hand, right_hand, show_fps=False, show_hud=False
             )
 
-            # Draw drum tuning overlay (live velocity meters, zones, fingertip tags, flash)
+            # Draw drum tuning overlay (live velocity meters, zones, fingertip tags, flash, AR pads)
             frame = drum_engine.draw_debug_overlay(
                 frame, right_hand, current_time=now
             )
@@ -173,7 +216,8 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
             track_tag = f"Track: {music_engine.style[:8]} ({'ON' if music_engine.is_playing else 'OFF'}) ['p']"
             status_text = (
                 f"FPS: {fps_val:.1f} | {track_tag} | Key: {music_engine.key} ['k'] | "
-                f"Scale: {music_engine.scale} ['s'] | [D] Demo: {'ON' if gui.is_demo_active else 'OFF'}"
+                f"Kit: {audio.current_kit} ['v'] | Sens: {drum_engine.sensitivity_preset} ['e'] | "
+                f"Looper: {looper.state} ['l'] | Rec: {'ON' if jam_recorder.is_recording else 'OFF'} ['r']"
             )
             frame = gui.draw_hud(
                 frame,
@@ -214,6 +258,26 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
                     elif key in (ord("t"), ord("T")):
                         music_engine.cycle_style()
                         gui.notify_action_event("cycle_style")
+                    elif key in (ord("v"), ord("V")):
+                        audio.cycle_kit()
+                        gui.notify_action_event("cycle_kit")
+                    elif key in (ord("e"), ord("E")):
+                        drum_engine.cycle_sensitivity()
+                        gui.notify_action_event("sensitivity")
+                    elif key in (ord("l"), ord("L")):
+                        looper.toggle()
+                        gui.notify_action_event("looper")
+                    elif key in (ord("r"), ord("R")):
+                        jam_recorder.toggle()
+                        gui.notify_action_event("recorder")
+                    elif key in (ord("j"), ord("J")) and not gui.is_demo_active:
+                        rhythm_hero.toggle()
+                        gui.notify_action_event("rhythm_game")
+                    elif key in (ord("h"), ord("H")):
+                        drum_engine.toggle_ar_pads()
+                        gui.notify_action_event("ar_pads")
+                    elif key in (ord("y"), ord("Y")):
+                        drum_engine.toggle_two_hand_drums()
                     elif key in (ord("m"), ord("M")):
                         drum_engine.toggle_mapping_mode()
                     elif key in (ord("b"), ord("B")):
@@ -247,6 +311,8 @@ def run_camera_test(camera_index: int = CAMERA_INDEX, max_frames: Optional[int] 
         tracker.release()
         music_engine.cleanup()
         drum_engine.cleanup()
+        if jam_recorder.is_recording:
+            jam_recorder.stop()
         print("[AirBeat] Resources cleanly released.")
 
 

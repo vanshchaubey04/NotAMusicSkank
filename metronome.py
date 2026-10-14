@@ -265,3 +265,17 @@ class MetronomeClock:
             "click_enabled": click_on,
             "quantize_mode": q_mode,
         }
+
+    def get_continuous_beat(self) -> float:
+        """Return continuous fractional beat position based on high-precision clock."""
+        now = time.perf_counter()
+        with self._lock:
+            current_bpm = self._bpm
+            beat_int = self._beat_index
+            last_beat = self._last_beat_time
+
+        beat_interval = 60.0 / max(1.0, current_bpm)
+        elapsed = now - last_beat
+        frac = max(0.0, min(1.0, elapsed / beat_interval))
+        return float(beat_int) + frac
+

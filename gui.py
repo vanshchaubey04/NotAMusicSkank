@@ -85,8 +85,21 @@ class TutorialStep:
 class OverlayGUI:
     """Full-screen interactive OpenCV overlay driven by left-hand gestures."""
 
-    def __init__(self, music_engine: Optional[Any] = None) -> None:
+    def __init__(
+        self,
+        music_engine: Optional[Any] = None,
+        audio_manager: Optional[Any] = None,
+        drum_engine: Optional[Any] = None,
+        looper: Optional[Any] = None,
+        jam_recorder: Optional[Any] = None,
+        rhythm_hero: Optional[Any] = None,
+    ) -> None:
         self.music_engine = music_engine
+        self.audio_manager = audio_manager
+        self.drum_engine = drum_engine
+        self.looper = looper
+        self.jam_recorder = jam_recorder
+        self.rhythm_hero = rhythm_hero
 
         # State cache
         self.selected_key: str = DEFAULT_KEY
@@ -313,18 +326,18 @@ class OverlayGUI:
     def _init_buttons(self) -> None:
         """Create buttons laid out ergonomically on the left edge of the screen."""
         btn_w = 260
-        btn_h = 58
+        btn_h = 48
         start_x = 22
-        start_y = 68
-        gap_y = 12
+        start_y = 56
+        gap_y = 6
 
-        # 1. Start / Stop Playback Button
+        # 1. Backing Track Start / Stop
         self.buttons.append(
             GUIButton(
                 button_id="playback",
                 title="BACKING TRACK",
                 x=start_x,
-                y=start_y,
+                y=start_y + 0 * (btn_h + gap_y),
                 w=btn_w,
                 h=btn_h,
                 get_value_text=lambda: "▶ START TRACK" if not self.is_playing else "⏹ STOP TRACK",
@@ -339,7 +352,7 @@ class OverlayGUI:
                 button_id="key",
                 title="KEY SELECTOR",
                 x=start_x,
-                y=start_y + (btn_h + gap_y),
+                y=start_y + 1 * (btn_h + gap_y),
                 w=btn_w,
                 h=btn_h,
                 get_value_text=lambda: f"Key: [ {self.selected_key} ]",
@@ -378,13 +391,103 @@ class OverlayGUI:
             )
         )
 
-        # 5. Interactive Demo / Tutorial Button
+        # 5. Drum Kit Selector Button
+        self.buttons.append(
+            GUIButton(
+                button_id="kit",
+                title="DRUM KIT",
+                x=start_x,
+                y=start_y + 4 * (btn_h + gap_y),
+                w=btn_w,
+                h=btn_h,
+                get_value_text=lambda: f"Kit: [ {self._get_kit_name()} ]",
+                on_click=self._action_cycle_kit,
+                accent_color=(255, 120, 40),
+            )
+        )
+
+        # 6. Strike Sensitivity Preset Button
+        self.buttons.append(
+            GUIButton(
+                button_id="sensitivity",
+                title="SENSITIVITY",
+                x=start_x,
+                y=start_y + 5 * (btn_h + gap_y),
+                w=btn_w,
+                h=btn_h,
+                get_value_text=lambda: f"Sens: [ {self._get_sensitivity()} ]",
+                on_click=self._action_cycle_sensitivity,
+                accent_color=(0, 220, 255),
+            )
+        )
+
+        # 7. Live Beat Looper Button
+        self.buttons.append(
+            GUIButton(
+                button_id="looper",
+                title="BEAT LOOPER",
+                x=start_x,
+                y=start_y + 6 * (btn_h + gap_y),
+                w=btn_w,
+                h=btn_h,
+                get_value_text=lambda: f"Loop: [ {self._get_looper_state()} ]",
+                on_click=self._action_toggle_looper,
+                accent_color=(255, 80, 180),
+            )
+        )
+
+        # 8. Jam Session Recorder Button
+        self.buttons.append(
+            GUIButton(
+                button_id="record",
+                title="JAM RECORDER",
+                x=start_x,
+                y=start_y + 7 * (btn_h + gap_y),
+                w=btn_w,
+                h=btn_h,
+                get_value_text=lambda: f"Rec: [ {self._get_recorder_state()} ]",
+                on_click=self._action_toggle_recorder,
+                accent_color=(60, 60, 240),
+            )
+        )
+
+        # 9. Rhythm Hero Game Mode Button
+        self.buttons.append(
+            GUIButton(
+                button_id="game",
+                title="RHYTHM HERO",
+                x=start_x,
+                y=start_y + 8 * (btn_h + gap_y),
+                w=btn_w,
+                h=btn_h,
+                get_value_text=lambda: f"Hero: [ {'ON' if self._is_game_active() else 'OFF'} ]",
+                on_click=self._action_toggle_game,
+                accent_color=(200, 40, 255),
+            )
+        )
+
+        # 10. Holographic AR Drum Pads Toggle Button
+        self.buttons.append(
+            GUIButton(
+                button_id="ar_pads",
+                title="AR DRUM PADS",
+                x=start_x,
+                y=start_y + 9 * (btn_h + gap_y),
+                w=btn_w,
+                h=btn_h,
+                get_value_text=lambda: f"Pads: [ {'ON' if self._is_ar_pads_on() else 'OFF'} ]",
+                on_click=self._action_toggle_ar_pads,
+                accent_color=(0, 255, 180),
+            )
+        )
+
+        # 11. Interactive Demo / Tutorial Button
         self.buttons.append(
             GUIButton(
                 button_id="demo",
                 title="TUTORIAL / DEMO",
                 x=start_x,
-                y=start_y + 4 * (btn_h + gap_y),
+                y=start_y + 10 * (btn_h + gap_y),
                 w=btn_w,
                 h=btn_h,
                 get_value_text=lambda: "▶ START DEMO" if not self.is_demo_active else "⏹ EXIT DEMO",
@@ -396,6 +499,26 @@ class OverlayGUI:
     def set_music_engine(self, engine: Any) -> None:
         """Attach music engine reference."""
         self.music_engine = engine
+
+    def set_subsystems(
+        self,
+        audio_manager: Optional[Any] = None,
+        drum_engine: Optional[Any] = None,
+        looper: Optional[Any] = None,
+        jam_recorder: Optional[Any] = None,
+        rhythm_hero: Optional[Any] = None,
+    ) -> None:
+        """Attach peripheral subsystems to GUI."""
+        if audio_manager is not None:
+            self.audio_manager = audio_manager
+        if drum_engine is not None:
+            self.drum_engine = drum_engine
+        if looper is not None:
+            self.looper = looper
+        if jam_recorder is not None:
+            self.jam_recorder = jam_recorder
+        if rhythm_hero is not None:
+            self.rhythm_hero = rhythm_hero
 
     # --- Button Action Handlers ---
     def _action_toggle_playback(self) -> None:
@@ -418,6 +541,68 @@ class OverlayGUI:
         if self.music_engine:
             self.selected_backing_track = self.music_engine.cycle_style(1)
             self.notify_action_event("cycle_style")
+
+    def _get_kit_name(self) -> str:
+        if self.audio_manager and hasattr(self.audio_manager, "current_kit"):
+            return self.audio_manager.current_kit
+        return "808 Trap"
+
+    def _action_cycle_kit(self) -> None:
+        if self.audio_manager and hasattr(self.audio_manager, "cycle_kit"):
+            kit = self.audio_manager.cycle_kit()
+            print(f"[OverlayGUI] Switched Drum Kit to: {kit}")
+            self.notify_action_event("cycle_kit")
+
+    def _get_sensitivity(self) -> str:
+        if self.drum_engine and hasattr(self.drum_engine, "sensitivity_preset"):
+            return self.drum_engine.sensitivity_preset
+        return "High"
+
+    def _action_cycle_sensitivity(self) -> None:
+        if self.drum_engine and hasattr(self.drum_engine, "cycle_sensitivity"):
+            sens = self.drum_engine.cycle_sensitivity()
+            print(f"[OverlayGUI] Switched Sensitivity to: {sens}")
+            self.notify_action_event("sensitivity")
+
+    def _get_looper_state(self) -> str:
+        if self.looper and hasattr(self.looper, "state"):
+            return self.looper.state
+        return "OFF"
+
+    def _action_toggle_looper(self) -> None:
+        if self.looper and hasattr(self.looper, "toggle"):
+            st = self.looper.toggle()
+            self.notify_action_event("looper")
+
+    def _get_recorder_state(self) -> str:
+        if self.jam_recorder and hasattr(self.jam_recorder, "is_recording"):
+            return "REC" if self.jam_recorder.is_recording else "IDLE"
+        return "IDLE"
+
+    def _action_toggle_recorder(self) -> None:
+        if self.jam_recorder and hasattr(self.jam_recorder, "toggle"):
+            self.jam_recorder.toggle()
+            self.notify_action_event("recorder")
+
+    def _is_game_active(self) -> bool:
+        if self.rhythm_hero and hasattr(self.rhythm_hero, "is_active"):
+            return bool(self.rhythm_hero.is_active)
+        return False
+
+    def _action_toggle_game(self) -> None:
+        if self.rhythm_hero and hasattr(self.rhythm_hero, "toggle"):
+            self.rhythm_hero.toggle()
+            self.notify_action_event("rhythm_game")
+
+    def _is_ar_pads_on(self) -> bool:
+        if self.drum_engine and hasattr(self.drum_engine, "ar_pads_enabled"):
+            return bool(self.drum_engine.ar_pads_enabled)
+        return True
+
+    def _action_toggle_ar_pads(self) -> None:
+        if self.drum_engine and hasattr(self.drum_engine, "toggle_ar_pads"):
+            self.drum_engine.toggle_ar_pads()
+            self.notify_action_event("ar_pads")
 
     def toggle_demo(self) -> bool:
         """Toggle interactive tutorial walkthrough mode."""
@@ -687,6 +872,10 @@ class OverlayGUI:
         # 1. Render Top Header Bar & Status
         self._render_header_bar(frame, w, camera_ok)
 
+        # 1b. Render Rhythm Hero game highway if active
+        if self.rhythm_hero is not None and getattr(self.rhythm_hero, "is_active", False):
+            self.rhythm_hero.render(frame, now)
+
         # 2. Render Interactive Left-Hand Buttons
         self._render_buttons(frame, now)
 
@@ -701,7 +890,7 @@ class OverlayGUI:
         if self.cursor_pos is not None:
             self._render_cursor(frame, now)
 
-        # 5. Render Bottom Diagnostic Banner
+        # 6. Render Bottom Diagnostic Banner
         if status_message:
             cv2.putText(
                 frame,
@@ -773,6 +962,33 @@ class OverlayGUI:
             cv2.LINE_AA,
         )
 
+        # Jam recording pill indicator
+        is_jam_rec = self.jam_recorder is not None and getattr(self.jam_recorder, "is_recording", False)
+        if is_jam_rec:
+            blink = int(time.time() * 2) % 2 == 0
+            rec_badge = "● JAM REC"
+            rec_color = (40, 40, 255) if blink else (100, 100, 200)
+            rx = pill_x - 105
+            cv2.rectangle(frame, (rx - 6, 12), (rx + 90, 36), rec_color, 1, cv2.LINE_AA)
+            cv2.putText(frame, rec_badge, (rx, 29), cv2.FONT_HERSHEY_DUPLEX, 0.42, rec_color, 1, cv2.LINE_AA)
+
+        # Looper status pill
+        looper_st = getattr(self.looper, "state", "OFF") if self.looper else "OFF"
+        if looper_st != "OFF":
+            loop_badge = f"● {looper_st}"
+            loop_color = (0, 255, 200) if looper_st == "PLAY" else (60, 120, 255)
+            lx = pill_x - (195 if is_jam_rec else 95)
+            cv2.rectangle(frame, (lx - 6, 12), (lx + 76, 36), loop_color, 1, cv2.LINE_AA)
+            cv2.putText(frame, loop_badge, (lx, 29), cv2.FONT_HERSHEY_DUPLEX, 0.40, loop_color, 1, cv2.LINE_AA)
+
+        # Rhythm Hero Game Mode badge
+        if self.rhythm_hero is not None and getattr(self.rhythm_hero, "is_active", False):
+            hero_badge = "★ HERO"
+            hero_color = (220, 40, 255)
+            hx = pill_x - (280 if is_jam_rec and looper_st != "OFF" else 185 if is_jam_rec or looper_st != "OFF" else 95)
+            cv2.rectangle(frame, (hx - 6, 12), (hx + 75, 36), hero_color, 1, cv2.LINE_AA)
+            cv2.putText(frame, hero_badge, (hx, 29), cv2.FONT_HERSHEY_DUPLEX, 0.40, hero_color, 1, cv2.LINE_AA)
+
         # Camera health status indicator
         cam_text = "● CAM" if camera_ok else "● NO CAM"
         cam_color = COLOR_SUCCESS if camera_ok else (60, 60, 240)
@@ -788,6 +1004,7 @@ class OverlayGUI:
             1,
             cv2.LINE_AA,
         )
+
 
     def _render_single_button(self, frame: np.ndarray, btn: GUIButton, now: float) -> None:
         """Render a single glassmorphic button with border, accent stripe, and text."""
